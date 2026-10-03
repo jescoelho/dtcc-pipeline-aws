@@ -163,19 +163,50 @@ inscrição no SNS** ("AWS Notification - Subscription Confirmation") --
 sem clicar em "Confirm subscription" nesse e-mail, os alertas não chegam.
 
 Isto cobre só "o job rodou e explodiu". Não cobre "o dado que chegou está
-estranho mas o job roda sem erro" -- essa é a tarefa de checagem de
-qualidade abaixo, que continua pendente.
+estranho mas o job roda sem erro" -- isso é a checagem de qualidade
+abaixo.
+
+### Observabilidade, etapa 2: checagem de qualidade do CSV
+
+`lambda/quality_check.py`, disparada pelo **mesmo evento do S3** que
+dispara a `trigger_bronze` (csv em `raw/dtcc/`), como alvo independente
+dentro da mesma notificação -- roda em paralelo, **não bloqueia o Glue**.
+Checagens, as três mais simples que cobrem o essencial:
+
+1. **Schema**: as colunas-chave usadas pela Bronze/Silver estão
+   presentes (`Dissemination Identifier`, `Original Dissemination
+   Identifier`, `Action type`, `Event timestamp`).
+2. **Volume**: o arquivo não chegou vazio.
+3. **Domínio**: todo valor de `Action type` está no conjunto conhecido
+   (`NEWT`/`MODI`/`CORR`/`TERM`/`EROR`/`REVI`) -- um valor novo pode ser
+   o DTCC mudando o layout, o que já aconteceu uma vez neste projeto.
+
+Se algum problema aparecer, publica no **mesmo tópico SNS** da falha do
+Glue -- um único canal de alerta para "pipeline com problema", não
+importa a causa. Se o arquivo estiver ok, não publica nada (mesmo
+princípio do alerta de falha: silêncio é o estado normal).
+
+Testado com S3 e SNS mockados (`tests/test_lambda_quality_check.py`,
+5/5): CSV válido, CSV vazio, coluna ausente, `Action type` desconhecido,
+múltiplos arquivos no mesmo evento.
+
+**Limite assumido nesta etapa**: a checagem só olha o CSV isoladamente
+(schema/volume/domínio). Não compara com o volume do dia anterior nem
+detecta uma queda gradual -- isso é uma extensão futura, não construída.
 
 ## Tarefas futuras (ainda não construídas)
 
-- **Checagem de qualidade de dados assim que o CSV aparecer**, antes do
-  Glue rodar (volume, schema, `Action type` dentro do esperado) -- reagindo
-  ao mesmo evento do S3 que dispara a Lambda de trigger do Glue, sem
-  acoplar as duas coisas na mesma função.
-
-**Depois, também pendente:** mover o `scripts/ingerir_cumulative.sh` (o
-download inicial) para dentro de uma Lambda com EventBridge Schedule,
-rodando sozinho todo dia, sem depender do computador estar ligado.
+- **Agendar a ingestão**: mover `scripts/ingerir_cumulative.sh` (o
+  download inicial) para dentro de uma Lambda com EventBridge Schedule,
+  rodando sozinho todo dia, sem depender do computador estar ligado --
+  único passo manual que resta em todo o pipeline.
+- **Step Functions**: hoje, dois CSVs chegando perto um do outro disparam
+  dois Glue runs concorrentes sobre a mesma pasta (inofensivo, mas
+  redundante -- ver aviso na seção da `trigger_bronze`). Step Functions
+  resolve isso com execução única por vez, e também orquestraria
+  Bronze → Silver → Gold em sequência.
+- **Qualidade de dados, extensão futura**: comparar o volume do dia com
+  o histórico (detectar queda gradual), não só o arquivo isolado.
 
 ## Roteiro de evolução
 

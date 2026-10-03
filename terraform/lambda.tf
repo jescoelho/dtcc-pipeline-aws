@@ -127,9 +127,11 @@ resource "aws_lambda_permission" "allow_s3_trigger_bronze" {
 }
 
 # Uma única configuração de notificação para o bucket -- o S3 não aceita
-# mais de um aws_s3_bucket_notification por bucket, então os dois gatilhos
-# (descompactar e disparar o Glue) vivem juntos aqui, cada um com seu
-# prefixo/sufixo próprio.
+# mais de um aws_s3_bucket_notification por bucket, então os três gatilhos
+# (descompactar, disparar o Glue, checar qualidade) vivem juntos aqui,
+# cada um com seu prefixo/sufixo. trigger_bronze e quality_check reagem
+# ao MESMO evento (csv em raw/dtcc/) como alvos independentes -- o S3
+# invoca as duas, uma não espera a outra.
 resource "aws_s3_bucket_notification" "unzip_on_upload" {
   bucket = aws_s3_bucket.lake.id
 
@@ -147,7 +149,18 @@ resource "aws_s3_bucket_notification" "unzip_on_upload" {
     filter_suffix       = ".csv"
   }
 
-  depends_on = [aws_lambda_permission.allow_s3, aws_lambda_permission.allow_s3_trigger_bronze]
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.quality_check.arn
+    events              = ["s3:ObjectCreated:*"]
+    filter_prefix       = "raw/dtcc/"
+    filter_suffix       = ".csv"
+  }
+
+  depends_on = [
+    aws_lambda_permission.allow_s3,
+    aws_lambda_permission.allow_s3_trigger_bronze,
+    aws_lambda_permission.allow_s3_quality_check,
+  ]
 }
 
 output "lambda_unzip" {
