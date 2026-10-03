@@ -66,6 +66,17 @@ resource "aws_cloudwatch_event_target" "csv_arrived_to_quality_check" {
   rule      = aws_cloudwatch_event_rule.csv_arrived.name
   target_id = "quality-check"
   arn       = aws_lambda_function.quality_check.arn
+
+  # Sem isso, uma entrega que falhar desaparece sem rastro -- ver
+  # terraform/dlq.tf.
+  dead_letter_config {
+    arn = aws_sqs_queue.eventos_falhos.arn
+  }
+
+  retry_policy {
+    maximum_retry_attempts       = 3
+    maximum_event_age_in_seconds = 3600
+  }
 }
 
 resource "aws_lambda_permission" "allow_eventbridge_quality_check" {

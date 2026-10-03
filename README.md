@@ -218,6 +218,27 @@ múltiplos arquivos no mesmo evento.
 (schema/volume/domínio). Não compara com o volume do dia anterior nem
 detecta uma queda gradual -- isso é uma extensão futura, não construída.
 
+### Observabilidade, etapa 3: dead-letter queue nos alvos do EventBridge
+
+Achado de uma avaliação de boas práticas do pipeline inteiro: sem isso,
+uma entrega que falhar na regra `csv_arrived` (throttle da Lambda, erro
+transiente da AWS, um bug novo) faz o evento **desaparecer
+silenciosamente** -- sem log, sem alerta. É um ponto cego exatamente na
+entrega do evento que alimenta a `trigger_bronze` e a `quality_check`, o
+que esvazia o propósito da observabilidade das etapas 1 e 2 se a entrega
+em si falhar sem deixar rastro.
+
+`terraform/dlq.tf` cria uma fila SQS (`${prefix}-eventos-falhos`) como
+destino de falha dos dois alvos (`dead_letter_config`), com
+`retry_policy` de até 3 tentativas em até 1h antes de cair na fila. A
+mensagem que cai na DLQ carrega o evento original -- dá pra reprocessar
+manualmente depois de entender a causa.
+
+**Limite assumido nesta etapa**: a DLQ guarda a mensagem, mas ninguém é
+avisado quando algo cai nela -- monitorar a fila (alarme no
+`ApproximateNumberOfMessagesVisible`, ligado ao mesmo tópico SNS) é
+extensão natural, não construída agora.
+
 ## Tarefas futuras (ainda não construídas)
 
 - **Agendar a ingestão**: mover `scripts/ingerir_cumulative.sh` (o
