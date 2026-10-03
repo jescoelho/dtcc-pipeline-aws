@@ -73,9 +73,22 @@ aws s3 cp ../CFTC_CUMULATIVE_RATES_AAAA_MM_DD.csv s3://$BUCKET/raw/dtcc/
 aws glue start-job-run --job-name $(terraform output -raw glue_job_bronze)
 ```
 
-Depois, no Athena (workgroup criado pelo Terraform), rode `athena/queries.sql`
-(troque `<BUCKET>` e `<DATABASE>`) para confirmar que a contagem de linhas
-e a distribuição de `Action type` bateram com o CSV original.
+Depois, cria/atualiza as tabelas do Athena (`dtcc_bronze`,
+`controle_execucoes`) com o script abaixo em vez de colar SQL no console
+-- ele busca `BUCKET`/`DATABASE`/`WORKGROUP` direto do Terraform e roda
+o `CREATE TABLE`/`MSCK REPAIR` via API do Athena:
+
+```bash
+./scripts/configurar_athena.sh
+```
+
+Seguro rodar de novo a qualquer momento (depois de cada ingestão nova,
+por exemplo, pra enxergar a partição do dia) -- `CREATE TABLE` usa
+`IF NOT EXISTS` e `MSCK REPAIR` só adiciona partições novas. As queries
+de exemplo (contagem de linhas, distribuição de `Action type`, volume e
+qualidade por dia) continuam em `athena/queries.sql`, pra rodar
+manualmente quando quiser explorar os dados -- essas não são
+automatizadas de propósito, são consulta, não setup.
 
 **Atenção ao orçamento:** este Terraform cria um **Budget novo**, separado
 do `b3-pipeline-aws` (nomes diferentes, mesma conta). O gasto da conta é
