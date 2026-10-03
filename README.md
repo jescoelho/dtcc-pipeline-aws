@@ -154,13 +154,42 @@ Cadeia completa agora:
 .csv em raw/dtcc/ -> EventBridge rule -> [trigger_bronze, quality_check]  (paralelo)
 ```
 
-**Aviso honesto sobre concorrência:** o job Glue Bronze lê a pasta
-`raw/dtcc/` inteira a cada execução (não só o arquivo novo). Se dois CSVs
-chegarem muito próximos um do outro, dois disparos do job podem rodar
-concorrentemente sobre os mesmos dados -- não corrompe nada (cada
-partição é sobrescrita de forma idêntica), mas é redundante. Resolver
-isso de verdade é o que a etapa de Step Functions (roteiro, item 2)
-cobre, com idempotência e controle de execução única por vez.
+**Aviso honesto sobre concorrência, parcialmente resolvido pelos Job
+Bookmarks (abaixo):** se dois CSVs chegarem muito próximos um do outro,
+dois disparos do job ainda podem rodar concorrentemente -- isso os Job
+Bookmarks não evitam (são por execução, não um lock entre execuções
+simultâneas). O que eles eliminam é o sintoma mais caro: hoje cada
+execução processa só os arquivos novos, não a pasta inteira, então a
+sobreposição fica barata e rápida em vez de redundante e cara. Resolver
+a concorrência de verdade (execução única por vez) é o que a etapa de
+Step Functions (roteiro, item 2) cobre.
+
+### Boas práticas, etapa 1: Job Bookmarks no Glue Bronze
+
+Achado da mesma avaliação que trouxe a DLQ: sem isso, cada execução do
+job relia `raw/dtcc/` **inteira**, inclusive arquivos já processados em
+runs anteriores -- custo e tempo crescendo sem necessidade a cada dia
+novo, e nenhum controle sobre reingestão duplicada do mesmo arquivo.
+
+`--job-bookmark-option = "job-bookmark-enable"` (Terraform) faz o Glue
+rastrear quais arquivos já leu com sucesso e processar só os novos a
+cada execução. Exige ler via `glueContext.create_dynamic_frame.from_options`
+em vez de `spark.read.csv` direto -- o bookmark é um recurso do Glue, não
+do Spark puro (ver comentários em `glue/bronze_ingest.py`).
+
+**Pegadinha operacional a saber:** na primeira execução depois de
+habilitar, o Glue não tem bookmark anterior, então processa tudo que já
+existe em `raw/dtcc/` uma última vez (comportamento esperado, não um
+bug). Se um dia você precisar forçar reprocessar tudo de novo
+propositalmente (um backfill, por exemplo), o bookmark tem que ser
+resetado explicitamente -- `aws glue reset-job-bookmark --job-name
+jessica-dtcclab-bronze-ingest` -- senão o job só vê os arquivos que
+chegarem depois do reset.
+
+**Limite assumido nesta etapa**: resolve custo/tempo e a maior parte da
+duplicidade (reler o mesmo arquivo sem necessidade). Não resolve duas
+execuções simultâneas colidindo (ver aviso acima) -- isso é Step
+Functions.
 
 ### Observabilidade, etapa 1: avisar quando o Glue Bronze falhar
 

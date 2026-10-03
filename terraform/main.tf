@@ -5,6 +5,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 5.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.4"
+    }
   }
 }
 
@@ -128,9 +132,13 @@ resource "aws_glue_job" "bronze" {
   }
 
   default_arguments = {
-    "--raw_path"       = "s3://${aws_s3_bucket.lake.id}/raw/dtcc/"
-    "--bronze_path"    = "s3://${aws_s3_bucket.lake.id}/bronze/dtcc/"
-    "--enable-metrics" = "true"
+    "--raw_path"            = "s3://${aws_s3_bucket.lake.id}/raw/dtcc/"
+    "--bronze_path"         = "s3://${aws_s3_bucket.lake.id}/bronze/dtcc/"
+    "--enable-metrics"      = "true"
+    # Processa só os arquivos novos desde a última execução com sucesso,
+    # em vez de reler raw/dtcc/ inteira a cada run -- ver glue/bronze_ingest.py
+    # para a explicação completa.
+    "--job-bookmark-option" = "job-bookmark-enable"
   }
 }
 

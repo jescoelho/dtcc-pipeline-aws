@@ -7,8 +7,25 @@ já declara a estrutura). Nenhum valor é convertido; tudo permanece string,
 inclusive campos vazios. Adiciona proveniência (arquivo_origem,
 line_number, ingerido_em) e particiona por arquivo_origem.
 
+**Job Bookmarks habilitado** (`--job-bookmark-option job-bookmark-enable`,
+ver terraform/main.tf): sem isso, cada execução relia a pasta raw/dtcc/
+inteira, mesmo os arquivos já processados em runs anteriores -- custo e
+tempo crescendo sem necessidade a cada dia novo, e dois disparos próximos
+reprocessando os mesmos dados concorrentemente. Com bookmarks, o Glue
+rastreia quais arquivos já leu com sucesso e só processa os novos.
+
+Isso exige ler via `glueContext.create_dynamic_frame.from_options` (com
+`transformation_ctx` -- é essa chave que o bookmark usa para saber o que
+já foi lido), não `spark.read.csv` direto: o bookmark é um recurso do
+Glue, não do Spark puro, e só funciona através da API de DynamicFrame.
+
+A escrita continua em `overwrite` com `partitionOverwriteMode=dynamic`:
+isso já era idempotente antes dos bookmarks (reprocessar o mesmo arquivo
+só sobrescreve a partição dele) e continua sendo -- os bookmarks reduzem
+o que entra no DataFrame a cada run, não mudam a lógica de escrita.
+
 Argumentos:
-  --raw_path     s3://bucket/raw/dtcc/CFTC_CUMULATIVE_RATES_AAAA_MM_DD.csv
+  --raw_path     s3://bucket/raw/dtcc/   (pasta, não um arquivo específico)
   --bronze_path  s3://bucket/bronze/dtcc/
 """
 import sys
@@ -27,7 +44,14 @@ spark = glue.spark_session
 job = Job(glue)
 job.init(args["JOB_NAME"], args)
 
-df = spark.read.option("header", "true").option("multiLine", "true").csv(args["raw_path"])
+dyf = glue.create_dynamic_frame.from_options(
+    connection_type="s3",
+    connection_options={"paths": [args["raw_path"]], "recurse": True},
+    format="csv",
+    format_options={"withHeader": True, "multiline": True},
+    transformation_ctx="raw_dtcc_source",
+)
+df = dyf.toDF()
 
 df = df.withColumn("arquivo_origem", F.element_at(F.split(F.input_file_name(), "/"), -1))
 
