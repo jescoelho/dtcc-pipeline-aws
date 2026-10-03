@@ -191,6 +191,36 @@ duplicidade (reler o mesmo arquivo sem necessidade). Não resolve duas
 execuções simultâneas colidindo (ver aviso acima) -- isso é Step
 Functions.
 
+### Boas práticas, etapa 2: retenção de log das Lambdas
+
+Outro achado da mesma avaliação: o log group de cada Lambda é criado
+automaticamente no primeiro invoke com retenção **"nunca expira"** --
+custo de armazenamento de CloudWatch Logs crescendo pra sempre, sem
+necessidade num laboratório que não precisa de histórico de meses.
+`terraform/log_retention.tf` define `retention_in_days = 14` pras três
+(`unzip_dtcc`, `trigger_bronze`, `quality_check`).
+
+**Passo manual necessário antes do `apply`**: os log groups já existem
+(foram criados pelas invocações que já rodamos), então o Terraform
+precisa importá-los pro estado em vez de criar do zero -- senão o
+`apply` falha com "log group already exists":
+
+```bash
+cd terraform
+terraform import aws_cloudwatch_log_group.unzip_dtcc /aws/lambda/jessica-dtcclab-unzip-dtcc
+terraform import aws_cloudwatch_log_group.trigger_bronze /aws/lambda/jessica-dtcclab-trigger-bronze
+terraform import aws_cloudwatch_log_group.quality_check /aws/lambda/jessica-dtcclab-quality-check
+```
+
+Depois do import, o `plan` deve mostrar só `retention_in_days` mudando
+de `null` pra `14` em cada um -- `~ update in-place`, nada de
+criar/destruir.
+
+**Fora do escopo desta etapa**: os log groups do Glue (`/aws-glue/jobs/...`)
+são compartilhados por toda a conta, não um por job -- ajustar a
+retenção deles afetaria qualquer outro laboratório que usar Glue nesta
+mesma conta, então não entram aqui.
+
 ### Observabilidade, etapa 1: avisar quando o Glue Bronze falhar
 
 Caminho nativo da AWS, sem Lambda nova (`terraform/observabilidade.tf`):
