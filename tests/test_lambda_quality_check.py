@@ -2,7 +2,13 @@
 com S3 e SNS mockados -- sem precisar de AWS de verdade.
 
 Evento no formato "S3 Object Created" do EventBridge (não o {"Records":
-[...]} do S3 direto) -- ver o docstring de lambda/quality_check.py."""
+[...]} do S3 direto) -- ver o docstring de lambda/quality_check.py.
+
+Desde 03/10/2026 esta Lambda não checa mais schema nem domínio (Action
+type) -- isso passou pro AWS Glue Data Quality (ver
+glue/bronze_ingest.py e o docstring do módulo). Os testes que existiam
+pra essas duas checagens foram removidos daqui; o que resta é só
+contagem de linhas e comparação com o histórico."""
 import csv
 import importlib
 import io
@@ -82,7 +88,7 @@ def _carregar_modulo(monkeypatch, client_fn):
         return quality_check
 
 
-def test_csv_valido_nao_publica_alerta(monkeypatch):
+def test_csv_normal_sem_historico_nao_publica_alerta(monkeypatch):
     corpo = _csv_bytes(
         [
             {
@@ -102,66 +108,6 @@ def test_csv_valido_nao_publica_alerta(monkeypatch):
     assert resposta["checado"]["problemas"] == []
     assert resposta["checado"]["linhas"] == 1
     fake_sns.publish.assert_not_called()
-
-
-def test_csv_vazio_publica_alerta(monkeypatch):
-    corpo = _csv_bytes([], COLUNAS_OK)
-    fake_s3, fake_sns, client_fn = _mock_clients(corpo)
-    modulo = _carregar_modulo(monkeypatch, client_fn)
-
-    resposta = modulo.handler(_evento_eventbridge("bucket-teste", "raw/dtcc/vazio.csv"), context=None)
-
-    assert resposta["checado"]["linhas"] == 0
-    assert resposta["checado"]["problemas"]
-    fake_sns.publish.assert_called_once()
-
-
-def test_coluna_ausente_publica_alerta(monkeypatch):
-    colunas_sem_action_type = [c for c in COLUNAS_OK if c != "Action type"]
-    corpo = _csv_bytes(
-        [
-            {
-                "Dissemination Identifier": "1",
-                "Original Dissemination Identifier": "",
-                "Event timestamp": "2026-10-02T19:00:00",
-            }
-        ],
-        colunas_sem_action_type,
-    )
-    fake_s3, fake_sns, client_fn = _mock_clients(corpo)
-    modulo = _carregar_modulo(monkeypatch, client_fn)
-
-    resposta = modulo.handler(
-        _evento_eventbridge("bucket-teste", "raw/dtcc/sem_coluna.csv"), context=None
-    )
-
-    assert any("colunas ausentes" in p for p in resposta["checado"]["problemas"])
-    fake_sns.publish.assert_called_once()
-
-
-def test_action_type_inesperado_publica_alerta(monkeypatch):
-    corpo = _csv_bytes(
-        [
-            {
-                "Dissemination Identifier": "1",
-                "Original Dissemination Identifier": "",
-                "Action type": "XXXX",
-                "Event timestamp": "2026-10-02T19:00:00",
-            }
-        ],
-        COLUNAS_OK,
-    )
-    fake_s3, fake_sns, client_fn = _mock_clients(corpo)
-    modulo = _carregar_modulo(monkeypatch, client_fn)
-
-    resposta = modulo.handler(
-        _evento_eventbridge("bucket-teste", "raw/dtcc/tipo_estranho.csv"), context=None
-    )
-
-    assert any(
-        "Action type inesperado" in p for p in resposta["checado"]["problemas"]
-    )
-    fake_sns.publish.assert_called_once()
 
 
 def test_cada_evento_e_checado_independentemente(monkeypatch):
@@ -186,7 +132,7 @@ def test_cada_evento_e_checado_independentemente(monkeypatch):
     assert resposta_2["checado"]["csv"] == "s3://b/raw/dtcc/b.csv"
 
 
-def test_registra_execucao_na_tabela_de_controle_mesmo_sem_problema(monkeypatch):
+def test_registra_execucao_na_tabela_de_controle(monkeypatch):
     corpo = _csv_bytes(
         [
             {
@@ -212,19 +158,6 @@ def test_registra_execucao_na_tabela_de_controle_mesmo_sem_problema(monkeypatch)
     assert registro["status"] == "ok"
     assert registro["linhas"] == 1
     assert registro["execution_id"] == "exec-abc"
-
-
-def test_registro_na_tabela_de_controle_marca_status_problema(monkeypatch):
-    corpo = _csv_bytes([], COLUNAS_OK)
-    fake_s3, fake_sns, client_fn = _mock_clients(corpo)
-    modulo = _carregar_modulo(monkeypatch, client_fn)
-
-    modulo.handler(_evento_eventbridge("meu-bucket", "raw/dtcc/vazio.csv"), context=None)
-
-    kwargs = fake_s3.put_object.call_args.kwargs
-    registro = json.loads(kwargs["Body"])
-    assert registro["status"] == "problema"
-    assert registro["problemas"]
 
 
 def test_volume_abaixo_do_historico_publica_alerta(monkeypatch):
@@ -280,7 +213,7 @@ def test_volume_normal_comparado_ao_historico_nao_alerta(monkeypatch):
 
 def test_sem_historico_nao_roda_checagem_de_volume_relativo(monkeypatch):
     # Sem nenhum registro histórico (pipeline nos primeiros dias) --
-    # mesmo um arquivo de 1 linha não deve ser comparado contra nada.
+    # mesmo um arquivo pequeno não deve ser comparado contra nada.
     corpo = _csv_bytes(
         [
             {
@@ -298,15 +231,17 @@ def test_sem_historico_nao_roda_checagem_de_volume_relativo(monkeypatch):
     resposta = modulo.handler(_evento_eventbridge("meu-bucket", "raw/dtcc/a.csv"), context=None)
 
     assert resposta["checado"]["problemas"] == []
+    fake_sns.publish.assert_not_called()
 
 
 def test_historico_ignora_registros_de_outras_origens(monkeypatch):
-    # trigger_bronze e glue_job também gravam em logs/execucoes/, mas
-    # não têm "linhas" com o mesmo significado (ou nem têm o campo) --
-    # a média não deve se confundir com eles.
+    # trigger_bronze, glue_job e glue_data_quality também gravam em
+    # logs/execucoes/, mas não têm "linhas" com o mesmo significado (ou
+    # nem têm o campo) -- a média não deve se confundir com eles.
     historico = [
         {"origem": "trigger_bronze", "job_run_id": "jr_1"},
         {"origem": "glue_job", "status": "succeeded", "duracao_segundos": 90},
+        {"origem": "glue_data_quality", "status": "ok", "regras": "[]"},
         {"origem": "quality_check", "linhas": 5, "status": "ok"},
     ]
     corpo = _csv_bytes([], COLUNAS_OK)
@@ -316,7 +251,7 @@ def test_historico_ignora_registros_de_outras_origens(monkeypatch):
     resposta = modulo.handler(_evento_eventbridge("meu-bucket", "raw/dtcc/vazio.csv"), context=None)
 
     # média histórica efetiva = 5 (só o registro de quality_check conta)
-    # -- arquivo vazio (0 linhas) fica bem abaixo disso, mas o problema
-    # de "arquivo vazio" já cobre esse caso; o importante aqui é que não
-    # explodiu tentando ler "linhas" dos registros sem esse campo.
+    # -- arquivo vazio (0 linhas) fica bem abaixo disso. O importante
+    # aqui é que não explodiu tentando ler "linhas" dos registros sem
+    # esse campo.
     assert any("volume muito abaixo do histórico" in p for p in resposta["checado"]["problemas"])

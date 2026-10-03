@@ -99,7 +99,11 @@ sql_controle_execucoes="CREATE EXTERNAL TABLE IF NOT EXISTS ${DATABASE}.controle
   problemas array<string>,
   status string,
   duracao_segundos int,
-  regras string
+  regra string,
+  outcome string,
+  motivo_falha string,
+  metrica_nome string,
+  metrica_valor double
 )
 PARTITIONED BY (dt string)
 ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'

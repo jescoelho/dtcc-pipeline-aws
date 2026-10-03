@@ -71,7 +71,11 @@ CREATE EXTERNAL TABLE IF NOT EXISTS <DATABASE>.controle_execucoes (
   problemas        array<string>,
   status           string,
   duracao_segundos int,
-  regras           string
+  regra            string,
+  outcome          string,
+  motivo_falha     string,
+  metrica_nome     string,
+  metrica_valor    double
 )
 PARTITIONED BY (dt string)
 ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
@@ -121,20 +125,41 @@ WHERE execution_id IS NOT NULL
 GROUP BY execution_id
 ORDER BY descompactado_em DESC;
 
--- Comparação lado a lado: quality_check.py (Python puro) vs. Glue Data
--- Quality (protótipo, ver glue/bronze_ingest.py) -- mesmo execution_id,
--- dois veredictos independentes sobre o mesmo arquivo. Objetivo:
--- decidir qual abordagem generalizar pras próximas fontes.
+-- Resumo por execução: Python (quality_check.py, só volume histórico
+-- desde a aposentadoria das checagens de schema/domínio) vs. Glue Data
+-- Quality (agora cobre schema, domínio e unicidade -- ver
+-- glue/bronze_ingest.py). Como cada execução grava VÁRIAS linhas de
+-- glue_data_quality (uma por regra avaliada, formato tidy -- ver
+-- _registrar_data_quality), "veredito_glue_dq" agrega: "problema" se
+-- QUALQUER regra falhou, senão "ok".
 SELECT
   execution_id,
-  MIN(CASE WHEN origem = 'quality_check'     THEN status END) AS veredito_python,
-  MIN(CASE WHEN origem = 'glue_data_quality' THEN status END) AS veredito_glue_dq,
-  MIN(CASE WHEN origem = 'glue_data_quality' THEN regras END) AS regras_glue_dq
+  MIN(CASE WHEN origem = 'quality_check' THEN status END) AS veredito_python,
+  MAX(CASE WHEN origem = 'glue_data_quality' AND outcome = 'Failed' THEN 'problema' ELSE NULL END)
+    AS veredito_glue_dq
 FROM <DATABASE>.controle_execucoes
 WHERE execution_id IS NOT NULL
   AND origem IN ('quality_check', 'glue_data_quality')
 GROUP BY execution_id
 ORDER BY execution_id DESC;
+
+-- Detalhe por regra do Glue Data Quality -- uma linha por regra
+-- avaliada, direto filtrável/agrupável sem json_extract (era um blob
+-- json numa única coluna "regras" antes desta extensão).
+SELECT dt, execution_id, regra, outcome, motivo_falha, metrica_nome, metrica_valor
+FROM <DATABASE>.controle_execucoes
+WHERE origem = 'glue_data_quality'
+ORDER BY dt DESC, execution_id, regra;
+
+-- Quais regras do Glue Data Quality mais falharam, no histórico todo --
+-- útil pra priorizar o que calibrar primeiro (limiares, domínio etc.).
+SELECT regra,
+       COUNT(*) AS total_avaliacoes,
+       SUM(CASE WHEN outcome = 'Failed' THEN 1 ELSE 0 END) AS falhas
+FROM <DATABASE>.controle_execucoes
+WHERE origem = 'glue_data_quality'
+GROUP BY regra
+ORDER BY falhas DESC;
 
 -- Nota: MSCK REPAIR precisa rodar de novo pra enxergar partições
 -- (dt=...) novas -- o mesmo limite que já existia na tabela dtcc_bronze.

@@ -1,6 +1,6 @@
-"""Lambda disparada por evento do EventBridge: confere qualidade básica
-do CSV que acabou de chegar em raw/dtcc/, ANTES (em paralelo, não
-bloqueando) do Glue processar.
+"""Lambda disparada por evento do EventBridge: confere o volume do CSV
+que acabou de chegar em raw/dtcc/ contra o histórico recente, ANTES (em
+paralelo, não bloqueando) do Glue processar.
 
 Alvo de aws_cloudwatch_event_rule.csv_arrived (terraform/lambda.tf),
 MESMA regra que dispara lambda/trigger_bronze.py -- as duas são alvos
@@ -20,29 +20,32 @@ trigger_bronze.py para a explicação completa de por que não é o formato
 
 Responsabilidade única -- só isso. Não dispara o Glue (isso é
 lambda/trigger_bronze.py) e não descompacta (lambda/unzip_dtcc.py). Se o
-arquivo tiver problema, publica no mesmo tópico SNS do alerta de falha do
-Glue (terraform/observabilidade.tf); não bloqueia a ingestão, só avisa.
+volume cair abaixo do histórico, publica no mesmo tópico SNS do alerta
+de falha do Glue (terraform/observabilidade.tf); não bloqueia a
+ingestão, só avisa.
 
-Checagens, na ordem do que já vimos quebrar no dado real:
-  1. Schema: as colunas-chave usadas pela Bronze/Silver estão presentes.
-  2. Volume absoluto: o arquivo não está vazio.
-  3. Domínio: todo valor de "Action type" está no conjunto conhecido
-     (NEWT/MODI/CORR/TERM/EROR/REVI) -- um valor novo pode ser o DTCC
-     mudando o layout, o que já aconteceu uma vez neste projeto.
-  4. Volume relativo ao histórico: compara a contagem de linhas do
-     arquivo de hoje com a média dos últimos DIAS_HISTORICO dias (lidos
-     de logs/execucoes/, a própria tabela de controle que esta Lambda
-     alimenta). Fecha a extensão futura que estava pendente desde a
-     criação da tabela de controle -- antes, só dava pra comparar o
-     arquivo isolado contra si mesmo (vazio ou não), não contra a
-     tendência real.
+APOSENTADO desta Lambda (03/10/2026): as checagens de schema
+(colunas presentes) e domínio (Action type no conjunto conhecido) que
+existiam aqui em Python puro foram desligadas depois de validar, com
+dado real, que o **AWS Glue Data Quality** (DQDL, ver
+glue/bronze_ingest.py) cobre essas duas dimensões de forma superior --
+métricas quantificadas (`Completeness`, `ColumnValues.Compliance`),
+não só um booleano, e sem manter regra de negócio duplicada em dois
+lugares (Python aqui, DQDL lá). Esta Lambda ficou só com o que o Glue
+Data Quality **não faz**:
+  1. Comparação de volume contra o histórico (baseline de N dias) --
+     o Glue DQ só vê o arquivo de hoje, isolado; não tem memória do
+     que já passou.
+  2. O alerta em si (publish no SNS) -- o Glue DQ só grava métrica,
+     não dispara notificação.
+Nada de schema/domínio é checado aqui -- isso seria redundante com as
+regras `ColumnExists`/`ColumnValues` do ruleset DQDL.
 
 Também grava um registro em logs/execucoes/ (tabela de controle
 consultável no Athena, ver athena/queries.sql) com a contagem de linhas
-e os problemas encontrados -- diferente do log do CloudWatch (texto
-solto, só serve pra depurar um erro específico), isso é dado
-estruturado: histórico de volume e qualidade por dia, consultável com
-SQL.
+-- diferente do log do CloudWatch (texto solto, só serve pra depurar um
+erro específico), isso é dado estruturado: histórico de volume por dia,
+consultável com SQL, e é a própria fonte que `_media_historica` lê.
 
 Variável de ambiente esperada: SNS_TOPIC_ARN.
 """
@@ -57,15 +60,6 @@ import boto3
 
 s3 = boto3.client("s3")
 sns = boto3.client("sns")
-
-COLUNAS_ESPERADAS = {
-    "Dissemination Identifier",
-    "Original Dissemination Identifier",
-    "Action type",
-    "Event timestamp",
-}
-ACTION_TYPES_ESPERADOS = {"NEWT", "MODI", "CORR", "TERM", "EROR", "REVI"}
-LINHAS_MINIMAS = 1
 
 # Quantos dias de histórico olhar pra calcular a média de volume, e o
 # quanto abaixo dela já conta como problema (0.5 = alerta se cair mais
@@ -94,27 +88,15 @@ def _buscar_execution_id(bucket: str, key: str) -> str:
 def _checar(bucket: str, key: str) -> dict:
     obj = s3.get_object(Bucket=bucket, Key=key)
     texto = obj["Body"].read().decode("utf-8-sig")
+    # csv.DictReader (não um split/count de linha) porque o CSV pode ter
+    # campos com quebra de linha dentro de aspas -- contar "\n" seria
+    # errado. Não usamos os valores de cada linha pra nada além de
+    # contar -- schema e domínio são responsabilidade do Glue Data
+    # Quality agora (ver docstring do módulo).
     leitor = csv.DictReader(io.StringIO(texto))
-    colunas = set(leitor.fieldnames or [])
+    linhas = sum(1 for _ in leitor)
+
     problemas = []
-
-    faltando = COLUNAS_ESPERADAS - colunas
-    if faltando:
-        problemas.append(f"colunas ausentes: {sorted(faltando)}")
-
-    linhas = 0
-    action_types_vistos = set()
-    for linha in leitor:
-        linhas += 1
-        action_types_vistos.add(linha.get("Action type", ""))
-
-    if linhas < LINHAS_MINIMAS:
-        problemas.append(f"arquivo com {linhas} linhas (esperado >= {LINHAS_MINIMAS})")
-
-    inesperados = action_types_vistos - ACTION_TYPES_ESPERADOS - {""}
-    if inesperados:
-        problemas.append(f"Action type inesperado: {sorted(inesperados)}")
-
     baseline = _media_historica(bucket)
     if baseline is not None:
         limite = baseline * (1 - QUEDA_MAXIMA_TOLERADA)

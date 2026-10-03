@@ -514,61 +514,78 @@ histórico, e que registros de outras origens (`trigger_bronze`,
   real do Cumulative ao longo de semanas -- ajustar depois de observar
   alguns alertas (falsos positivos ou negativos) é esperado.
 
-### Protótipo: AWS Glue Data Quality, lado a lado com quality_check.py
+### AWS Glue Data Quality, validado e adotado para schema/domínio/unicidade
 
 Pergunta que motivou isso: como automatizar qualidade/observabilidade
 de forma que generalize pra qualquer tabela, não só pra este pipeline?
-Resposta parcial: várias dimensões de qualidade (completude, validade
-de domínio, unicidade) já são um serviço nativo da AWS -- **Glue Data
+Resposta: várias dimensões de qualidade (completude, validade de
+domínio, unicidade) já são um serviço nativo da AWS -- **Glue Data
 Quality** (DQDL) -- em vez de código Python escrito à mão. Dado que o
-pipeline já roda em Glue, vale comparar antes de generalizar o motor
+pipeline já roda em Glue, valeu comparar antes de generalizar o motor
 próprio.
 
-`glue/bronze_ingest.py` agora roda um `EvaluateDataQuality` com um
-ruleset DQDL equivalente ao que `quality_check.py` já checa
-(`ColumnExists`, `IsComplete`, `ColumnValues` pro domínio de Action
-type, `RowCount`) mais uma checagem que o Python **não tem**:
-`Uniqueness "Dissemination Identifier" > 0.99`. O resultado é gravado
-em `logs/execucoes/` com `origem="glue_data_quality"`, mesmo
-`execution_id` do resto do fluxo -- a query "Comparação lado a lado"
-em `athena/queries.sql` junta os dois veredictos (Python vs. Glue DQ)
-pelo mesmo `execution_id`.
+`glue/bronze_ingest.py` roda um `EvaluateDataQuality` com um ruleset
+DQDL cobrindo schema (`ColumnExists`, `IsComplete`), domínio
+(`ColumnValues` pro Action type), volume absoluto (`RowCount > 0`) e
+unicidade (`Uniqueness "Dissemination Identifier" > 0.99` -- checagem
+que o Python **nunca teve**). O resultado é gravado em
+`logs/execucoes/` com `origem="glue_data_quality"`, mesmo
+`execution_id` do resto do fluxo.
 
-Decisão de escopo: `enableDataQualityResultsPublishing` (o repositório
-nativo de resultados do Glue) ficou **desligado** -- evita precisar
-descobrir e validar permissões IAM adicionais específicas do serviço
-de Data Quality; `enableDataQualityCloudWatchMetrics` ficou ligado
-(só precisa de `cloudwatch:PutMetricData`, já adicionado ao role do
-Glue em `terraform/main.tf`) e publica pass/fail por regra como
-métrica.
+**Bugs reais encontrados e corrigidos na primeira execução** (confirma
+por que não dava pra testar isso localmente -- não existe Spark/Glue
+Data Quality fora da AWS):
+- `EvaluateDataQuality().process_rows(...)` devolve uma
+  `DynamicFrameCollection`, não um `DynamicFrame` direto
+  (`AttributeError: 'DynamicFrameCollection' object has no attribute
+  'toDF'`). Corrigido extraindo a chave `"ruleOutcomes"` via
+  `SelectFromCollection.apply(dfc=..., key="ruleOutcomes", ...)` --
+  confirmado contra a documentação oficial da AWS antes de reaplicar,
+  pra não ficar tentando adivinhar de novo.
+- Validado com dado real depois da correção: as 8 regras rodaram,
+  `RowCount` (27133) bateu exatamente com o `linhas` que o
+  `quality_check.py` contou pro mesmo `execution_id`, e os dois
+  vereditos concordaram (`ok`).
 
-**Importante -- diferente de toda outra extensão deste README: isto
-NÃO foi validado em execução real ainda.** As Lambdas foram testadas
-com `pytest` e mocks antes de qualquer deploy; não existe Spark/Glue
-Data Quality rodando localmente, então a primeira vez que este código
-roda de verdade é na AWS. Plano de validação (próximo passo, não
-executado ainda):
-1. `terraform apply` (cria a permissão de CloudWatch, atualiza o
-   script do Glue).
-2. `./scripts/configurar_athena.sh` (schema de `controle_execucoes`
-   ganhou a coluna `regras`).
-3. Disparar uma ingestão e, se o job terminar com `succeeded`,
-   conferir: (a) se o `EvaluateDataQuality` nem quebrou a sintaxe do
-   ruleset -- primeiro risco real, nunca rodou; (b) se o registro
-   `glue_data_quality` apareceu em `controle_execucoes` com as 8
-   regras; (c) se o veredicto bate com o do `quality_check.py` pro
-   mesmo `execution_id`.
-4. Se o job falhar, o motivo mais provável é erro de sintaxe no DQDL
-   ou nome de transform/import errado (`awsgluedq.transforms` -- não
-   testado) -- `aws glue get-job-run` com `--include-job-definition`
-   e o log do job (`/aws-glue/jobs/...`) têm o erro real.
+**Decisão tomada com base no resultado real**: aposentar as checagens
+de schema e domínio do `quality_check.py` -- o Glue Data Quality cobre
+essas duas dimensões de forma superior (métricas quantificadas como
+`Completeness`/`Uniqueness`, não só um booleano) e sem duplicar a
+mesma regra de negócio em dois lugares (Python aqui, DQDL lá).
+`lambda/quality_check.py` ficou só com o que o Glue Data Quality **não
+faz**: comparação de volume contra o histórico (o Glue DQ só vê o
+arquivo de hoje, isolado) e o alerta via SNS em si (o Glue DQ só grava
+métrica, não notifica). Os três testes de schema/domínio em
+`tests/test_lambda_quality_check.py` foram removidos -- essa cobertura
+agora é responsabilidade do ruleset DQDL, não testável aqui.
 
-**Limite já conhecido, mesmo sem rodar**: isto cobre só a Bronze. As
-checagens 4-6 (atualidade, consistência sazonal, linhagem de dado) que
-discutimos como parte de generalizar observabilidade continuam fora
-do escopo do Glue Data Quality -- são sobre o *pipeline*, não sobre o
-*dado isolado*, e continuam sendo papel da tabela de controle
-(`logs/execucoes/`), não deste protótipo.
+Decisão de escopo que persiste: `enableDataQualityResultsPublishing`
+(repositório nativo de resultados do Glue) continua **desligado** --
+`enableDataQualityCloudWatchMetrics` fica ligado (publica pass/fail
+por regra como métrica, só precisa de `cloudwatch:PutMetricData`) e o
+resumo próprio em `logs/execucoes/` já é consultável no Athena, que é
+o que usamos pra comparar com o `quality_check.py`.
+
+**Formato de armazenamento (03/10/2026): tidy, uma linha por regra.**
+A primeira versão gravava um único registro por execução com todas as
+8 regras dentro de uma coluna `regras` (string JSON) -- qualquer
+consulta exigia `json_extract`. Reescrito pra gravar um registro por
+regra avaliada (`regra`, `outcome`, `motivo_falha`, `metrica_nome`,
+`metrica_valor`, além de `execution_id`/`status`/`timestamp` já
+usados pelas outras etapas) -- filtra e agrupa direto em SQL
+(`WHERE outcome = 'Failed'`, `GROUP BY regra`), sem parsear nada. Ver
+`_registrar_data_quality` em `glue/bronze_ingest.py` e as queries de
+detalhe em `athena/queries.sql`. Limite aceito: cada linha carrega no
+máximo uma métrica (`metrica_nome`/`metrica_valor`); neste ruleset
+cada regra nunca tem mais que uma, mas uma regra futura com múltiplas
+métricas perderia as demais.
+
+**Limite que persiste**: isto cobre só a Bronze, e só as dimensões
+1-3 (completude, validade, unicidade) da taxonomia de qualidade que
+discutimos. Atualidade, consistência sazonal e linhagem de dado
+continuam fora do escopo do Glue Data Quality -- são sobre o
+*pipeline*, não sobre o *dado isolado*, e continuam sendo papel da
+tabela de controle (`logs/execucoes/`).
 
 ## Tarefas futuras (ainda não construídas)
 
@@ -581,8 +598,13 @@ do escopo do Glue Data Quality -- são sobre o *pipeline*, não sobre o
   redundante -- ver aviso na seção da `trigger_bronze`). Step Functions
   resolve isso com execução única por vez, e também orquestraria
   Bronze → Silver → Gold em sequência.
-- **Qualidade de dados, extensão futura**: comparar o volume do dia com
-  o histórico (detectar queda gradual), não só o arquivo isolado.
+- **Generalizar pra outras fontes**: extrair o layout S3 (`raw/dtcc/`),
+  as regras de qualidade e o ruleset DQDL pra um config por fonte, em
+  vez de strings cravadas no código -- ver análise de parametrização
+  discutida nesta sessão.
+- **Atualidade, consistência sazonal, linhagem de dado**: as três
+  dimensões de qualidade que o Glue Data Quality não cobre (ver seção
+  acima) -- pedem um runner agendado, não reativo a evento.
 
 ## Roteiro de evolução
 

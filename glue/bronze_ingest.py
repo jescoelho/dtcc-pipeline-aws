@@ -24,14 +24,14 @@ isso já era idempotente antes dos bookmarks (reprocessar o mesmo arquivo
 só sobrescreve a partição dele) e continua sendo -- os bookmarks reduzem
 o que entra no DataFrame a cada run, não mudam a lógica de escrita.
 
-**Protótipo: AWS Glue Data Quality (DQDL), rodando ao lado do
-lambda/quality_check.py, não substituindo.** Ideia: comparar as duas
-abordagens com dado real antes de decidir qual generalizar pra outras
-fontes (ver README, seção de observabilidade genérica). O Glue Data
-Quality cobre nativamente completude, validade de domínio e unicidade
--- dimensões que hoje são código Python escrito à mão no
-quality_check.py. Rodado aqui (dentro do próprio job Glue, via o
-transform EvaluateDataQuality) em vez de numa Lambda nova, porque é
+**AWS Glue Data Quality (DQDL)**, validado com dado real em 03/10/2026
+(RowCount=27133 bateu exatamente com a contagem em Python do
+quality_check.py, mesmo veredicto "ok") e adotado: desde então é quem
+cobre completude, validade de domínio (Action type) e unicidade --
+dimensões que antes eram código Python escrito à mão no
+quality_check.py, aposentado dessas checagens (ver docstring de
+lambda/quality_check.py). Rodado aqui (dentro do próprio job Glue, via
+o transform EvaluateDataQuality) em vez de numa Lambda nova, porque é
 assim que o serviço se integra a um job ETL -- não existe variante
 "Lambda chama Glue Data Quality" sem reimplementar a avaliação.
 
@@ -47,9 +47,12 @@ Glue já tem (s3:PutObject no bucket inteiro, ver terraform/main.tf).
 métricas de pass/fail por regra no CloudWatch, sem exigir permissão
 nova além de cloudwatch:PutMetricData (adicionada ao role do Glue).
 
-NÃO VALIDADO EM EXECUÇÃO REAL ainda -- diferente das Lambdas (testadas
-com pytest e mocks), não há como rodar Spark/Glue Data Quality
-localmente. A primeira execução real na AWS é o teste.
+Cada regra do ruleset gera UM registro em logs/execucoes/ (formato
+tidy: colunas regra/outcome/motivo_falha/metrica_nome/metrica_valor,
+ver _registrar_data_quality) -- não um único registro com um blob json
+de todas as regras, pra poder filtrar/agrupar por regra direto em SQL.
+Diferente das Lambdas (testadas com pytest e mocks), não há como rodar
+Spark/Glue Data Quality localmente -- a execução real na AWS é o teste.
 
 Argumentos:
   --raw_path       s3://bucket/raw/dtcc/   (pasta, não um arquivo específico)
@@ -105,11 +108,12 @@ dyf = glue.create_dynamic_frame.from_options(
     transformation_ctx="raw_dtcc_source",
 )
 
-# ---------- Glue Data Quality (protótipo) ----------
-# Mesmas regras que o quality_check.py já checa em Python puro (schema,
-# domínio de Action type), mais Uniqueness (que o quality_check.py NÃO
-# tem hoje) -- ver docstring acima pro raciocínio completo. Limiares
-# (0.99 de unicidade) são números redondos de partida, não calibrados.
+# ---------- Glue Data Quality ----------
+# Cobre schema, domínio de Action type e unicidade -- as checagens que
+# existiam em Python puro no quality_check.py antes da aposentadoria
+# (ver docstring acima e docstring de lambda/quality_check.py).
+# Limiares (0.99 de unicidade) são números redondos de partida, não
+# calibrados.
 ruleset_dq = """
 Rules = [
     ColumnExists "Dissemination Identifier",
@@ -145,31 +149,46 @@ dq_resultado = SelectFromCollection.apply(
 
 
 def _registrar_data_quality(dq_resultado, raw_path: str, execution_id) -> None:
-    """Grava o resumo do Glue Data Quality em logs/execucoes/, no mesmo
-    formato que as outras etapas do pipeline usam -- pra comparar lado a
-    lado com os registros de quality_check.py no Athena (mesma tabela,
-    execution_id em comum quando disponível)."""
-    linhas = [row.asDict() for row in dq_resultado.toDF().collect()]
-    status = "ok" if all(r.get("Outcome") == "Passed" for r in linhas) else "problema"
+    """Grava UM registro por regra avaliada -- não um blob único com as
+    8 regras dentro de uma coluna "regras" (ver histórico: era assim
+    antes, e exigia json_extract pra qualquer consulta). Tabela "tidy":
+    uma informação por coluna, filtra e agrupa direto em SQL
+    (`WHERE outcome = 'Failed'`, `GROUP BY regra`), sem parsear nada.
 
+    Cada linha do resultado do Glue Data Quality tem no máximo UMA
+    métrica em EvaluatedMetrics neste ruleset (confirmado com dado real
+    -- ColumnExists não tem métrica nenhuma, as demais têm exatamente
+    uma: Completeness, RowCount, ColumnValues.Compliance, Uniqueness).
+    Por isso metrica_nome/metrica_valor cabem em colunas simples; se
+    uma regra futura trouxer mais de uma métrica, só a primeira seria
+    capturada aqui -- limite aceito por simplicidade, não validado
+    contra esse caso."""
+    linhas = [row.asDict() for row in dq_resultado.toDF().collect()]
     bucket = urlparse(raw_path).netloc
     agora = datetime.now(timezone.utc)
-    registro = {
-        "timestamp": agora.isoformat(),
-        "origem": "glue_data_quality",
-        "execution_id": execution_id,
-        "status": status,
-        # String JSON, não array<struct> nativo: as colunas que vêm em
-        # cada linha de resultado variam por tipo de regra (Outcome,
-        # FailureReason nem sempre presentes) -- serializar como texto
-        # evita schema do Athena quebrar a cada regra nova. Quem
-        # consultar usa json_extract.
-        "regras": json.dumps(linhas, default=str),
-    }
-    log_key = f"logs/execucoes/dt={agora.strftime('%Y-%m-%d')}/{uuid.uuid4()}.json"
-    boto3.client("s3").put_object(
-        Bucket=bucket, Key=log_key, Body=json.dumps(registro, default=str).encode("utf-8")
-    )
+    s3_cliente = boto3.client("s3")
+
+    for linha in linhas:
+        metricas = linha.get("EvaluatedMetrics") or {}
+        metrica_nome = next(iter(metricas), None)
+        metrica_valor = metricas.get(metrica_nome) if metrica_nome is not None else None
+        outcome = linha.get("Outcome")
+
+        registro = {
+            "timestamp": agora.isoformat(),
+            "origem": "glue_data_quality",
+            "execution_id": execution_id,
+            "regra": linha.get("Rule"),
+            "outcome": outcome,
+            "motivo_falha": linha.get("FailureReason"),
+            "metrica_nome": metrica_nome,
+            "metrica_valor": metrica_valor,
+            "status": "ok" if outcome == "Passed" else "problema",
+        }
+        log_key = f"logs/execucoes/dt={agora.strftime('%Y-%m-%d')}/{uuid.uuid4()}.json"
+        s3_cliente.put_object(
+            Bucket=bucket, Key=log_key, Body=json.dumps(registro, default=str).encode("utf-8")
+        )
 
 
 _registrar_data_quality(dq_resultado, args["raw_path"], execution_id)
