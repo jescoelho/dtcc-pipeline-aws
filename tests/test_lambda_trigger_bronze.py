@@ -20,10 +20,11 @@ def _evento_eventbridge(bucket: str, key: str) -> dict:
     }
 
 
-def _mock_clients(job_run_ids):
+def _mock_clients(job_run_ids, execution_id="exec-fixo-teste"):
     fake_glue = mock.Mock()
     fake_glue.start_job_run.side_effect = [{"JobRunId": jid} for jid in job_run_ids]
     fake_s3 = mock.Mock()
+    fake_s3.head_object.return_value = {"Metadata": {"execution-id": execution_id}}
 
     def _client(nome, *a, **kw):
         return {"glue": fake_glue, "s3": fake_s3}[nome]
@@ -46,8 +47,12 @@ def test_dispara_start_job_run_com_o_job_certo(monkeypatch):
             context=None,
         )
 
-        fake_glue.start_job_run.assert_called_once_with(JobName="jessica-dtcclab-bronze-ingest")
+        fake_glue.start_job_run.assert_called_once_with(
+            JobName="jessica-dtcclab-bronze-ingest",
+            Arguments={"--execution_id": "exec-fixo-teste"},
+        )
         assert resposta["disparado"]["job_run_id"] == "jr_123"
+        assert resposta["disparado"]["execution_id"] == "exec-fixo-teste"
         assert (
             resposta["disparado"]["csv"]
             == "s3://bucket-teste/raw/dtcc/CFTC_CUMULATIVE_RATES_2026_10_02.csv"
@@ -72,7 +77,7 @@ def test_cada_evento_dispara_uma_execucao_independente(monkeypatch):
 
 def test_registra_execucao_na_tabela_de_controle(monkeypatch):
     monkeypatch.setenv("GLUE_JOB_NAME", "job-x")
-    fake_glue, fake_s3, client_fn = _mock_clients(["jr_1"])
+    fake_glue, fake_s3, client_fn = _mock_clients(["jr_1"], execution_id="exec-abc")
 
     with mock.patch("boto3.client", side_effect=client_fn):
         import trigger_bronze
@@ -88,3 +93,20 @@ def test_registra_execucao_na_tabela_de_controle(monkeypatch):
         assert registro["origem"] == "trigger_bronze"
         assert registro["job_run_id"] == "jr_1"
         assert registro["status"] == "disparado"
+        assert registro["execution_id"] == "exec-abc"
+
+
+def test_sem_metadado_execution_id_gera_um_novo_em_vez_de_falhar(monkeypatch):
+    monkeypatch.setenv("GLUE_JOB_NAME", "job-x")
+    fake_glue, fake_s3, client_fn = _mock_clients(["jr_1"])
+    fake_s3.head_object.return_value = {"Metadata": {}}
+
+    with mock.patch("boto3.client", side_effect=client_fn):
+        import trigger_bronze
+        importlib.reload(trigger_bronze)
+
+        resposta = trigger_bronze.handler(
+            _evento_eventbridge("meu-bucket", "raw/dtcc/sem_metadado.csv"), context=None
+        )
+
+        assert resposta["disparado"]["execution_id"]

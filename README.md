@@ -355,6 +355,103 @@ avisado quando algo cai nela -- monitorar a fila (alarme no
 `ApproximateNumberOfMessagesVisible`, ligado ao mesmo tópico SNS) é
 extensão natural, não construída agora.
 
+### Bug real encontrado: filtro do EventBridge deixava passar CSV errado
+
+Ao validar a tabela de controle (`controle_execucoes`) com dados reais,
+apareceram dois registros de `trigger_bronze` disparados para
+`athena-results/<uuid>.csv` -- os arquivos de resultado que o próprio
+Athena grava no bucket a cada query, não um CSV do DTCC.
+
+Causa: o `event_pattern` da regra `csv_arrived`
+(`terraform/lambda.tf`) combinava prefixo e sufixo no mesmo array de
+`key`:
+
+```hcl
+key = [
+  { prefix = "raw/dtcc/" },
+  { suffix = ".csv" },
+]
+```
+
+A documentação da AWS descreve essa combinação como um **AND**
+especial (prefixo E sufixo), mas na prática, nesse nível de
+aninhamento (`detail.object.key`), ela se comportou como **OR** --
+qualquer `.csv` do bucket bateu com a regra, não só os de
+`raw/dtcc/`. Resultado real: 2 execuções do Glue Bronze disparadas à
+toa pelos CSVs de resultado do Athena.
+
+**Correção**: trocar a combinação prefixo+sufixo por só o prefixo.
+`raw/dtcc/` é exclusivo da Lambda `unzip_dtcc` -- nada mais escreve
+ali -- então o prefixo sozinho já identifica o evento certo, sem
+depender de uma combinação que não se mostrou confiável:
+
+```hcl
+key = [
+  { prefix = "raw/dtcc/" },
+]
+```
+
+**Lição**: documentação de comportamento "especial" de serviço
+gerenciado (como essa combinação AND) merece validação empírica antes
+de confiar nela em produção -- o jeito mais simples de descobrir o
+problema foi justamente construir a tabela de controle estruturada
+(etapa 3) e **olhar os dados reais**, não inspecionar o Terraform.
+
+### Boas práticas, etapa 4: fluxo end-to-end completo na tabela de controle
+
+Pergunta que motivou esta etapa: a tabela de controle da etapa 3 estava
+completa, ou faltava alguma coisa pra cobrir o fluxo end-to-end? Três
+lacunas reais:
+
+1. **A descompactação não deixava rastro.** `lambda/unzip_dtcc.py` agora
+   grava um registro (`origem="unzip_dtcc"`, `zip` de origem, `csv`
+   gerado, `status="descompactado"`) -- antes, a chegada do `.zip` só
+   existia no CloudWatch.
+2. **Faltava o desfecho do Glue.** `trigger_bronze` só gravava
+   `status="disparado"` (o início) -- não existia, na tabela, se aquele
+   `job_run_id` terminou com sucesso, falhou, ou quanto tempo levou.
+   Nova Lambda `lambda/job_concluido.py`, disparada por um evento nativo
+   do Glue (`Glue Job State Change`, via `aws_cloudwatch_event_rule.glue_bronze_concluido`
+   em `terraform/observabilidade.tf`) pra **todo** desfecho (sucesso
+   incluso -- diferente da regra de alerta por e-mail da etapa 1, que é
+   só pra falha, de propósito). Grava `origem="glue_job"`, `status`
+   (`succeeded`/`failed`/`timeout`/...) e `duracao_segundos`
+   (`ExecutionTime`, vindo de `glue:GetJobRun`).
+3. **Não dava pra ligar as etapas de forma confiável.** Juntar
+   "disparado" com "checagem de qualidade" só por nome de arquivo +
+   proximidade de horário é frágil (ambíguo se o mesmo CSV for
+   reprocessado). Agora existe um `execution_id` (uuid) que nasce no
+   `unzip_dtcc.py`, viaja como metadado do objeto S3
+   (`Metadata={"execution-id": ...}`), é lido de volta por
+   `trigger_bronze.py` e `quality_check.py` via `head_object`, e é
+   propagado pro Glue como argumento de job (`--execution_id`), de onde
+   `job_concluido.py` o recupera no fim via `glue:GetJobRun`. As quatro
+   etapas ficam ligadas pelo mesmo `execution_id` -- ver a query "Fluxo
+   completo de uma execução" em `athena/queries.sql`, que junta tudo numa
+   linha por execução.
+
+`scripts/configurar_athena.sh` agora recria a tabela `controle_execucoes`
+(`DROP TABLE` + `CREATE`, só metadado -- os dados em
+`logs/execucoes/` não são tocados) em vez de só `CREATE IF NOT EXISTS`,
+porque o schema ganhou colunas novas (`zip`, `execution_id`,
+`duracao_segundos`) e `CREATE EXTERNAL TABLE IF NOT EXISTS` não atualiza
+o schema de uma tabela que já existe.
+
+Testado com Glue/S3 mockados
+(`tests/test_lambda_unzip.py`, `tests/test_lambda_trigger_bronze.py`,
+`tests/test_lambda_quality_check.py`, novo
+`tests/test_lambda_job_concluido.py`): confirma o metadado no objeto, a
+propagação do argumento `--execution_id` pro `start_job_run`, o
+fallback (gera um novo `execution_id` em vez de quebrar quando o
+metadado não existe -- ex.: CSV colocado manualmente) e o `status` em
+minúsculas gravado a partir do `state` do evento do Glue.
+
+**Limite assumido nesta etapa**: se `head_object` falhar (objeto
+apagado entre o evento e a leitura, por exemplo), a Lambda quebra sem
+fallback -- diferente do caso "metadado ausente", que já é tratado.
+Não aconteceu até agora; fica registrado como risco conhecido, não
+como bug.
+
 ## Tarefas futuras (ainda não construídas)
 
 - **Agendar a ingestão**: mover `scripts/ingerir_cumulative.sh` (o

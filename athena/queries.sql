@@ -51,14 +51,26 @@ ORDER BY total DESC;
 -- de volume e taxa de problemas ao longo do tempo.
 -- ============================================================
 
+-- Schema cobre as 4 etapas do fluxo end-to-end (ver README, achado da
+-- avaliação de observabilidade): unzip_dtcc (descompactou),
+-- trigger_bronze (disparou o Glue), quality_check (checou qualidade) e
+-- glue_job (o Glue terminou -- sucesso ou falha). Cada etapa grava um
+-- subconjunto diferente das colunas; o execution_id é o que liga todas
+-- as quatro de um mesmo arquivo. Se o schema mudar, rode
+-- scripts/configurar_athena.sh de novo -- ele faz DROP+CREATE (só
+-- metadado) nesta tabela, porque CREATE EXTERNAL TABLE IF NOT EXISTS não
+-- atualiza o schema de uma tabela que já existe.
 CREATE EXTERNAL TABLE IF NOT EXISTS <DATABASE>.controle_execucoes (
-  `timestamp` string,
-  origem      string,
-  csv         string,
-  job_run_id  string,
-  linhas      int,
-  problemas   array<string>,
-  status      string
+  `timestamp`      string,
+  origem           string,
+  csv              string,
+  zip              string,
+  job_run_id       string,
+  execution_id     string,
+  linhas           int,
+  problemas        array<string>,
+  status           string,
+  duracao_segundos int
 )
 PARTITIONED BY (dt string)
 ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
@@ -92,6 +104,21 @@ SELECT dt, csv, job_run_id, "timestamp"
 FROM <DATABASE>.controle_execucoes
 WHERE origem = 'trigger_bronze'
 ORDER BY "timestamp" DESC;
+
+-- Fluxo completo de uma execução, as 4 etapas lado a lado -- a pergunta
+-- que a tabela não respondia antes desta extensão ("esse CSV terminou
+-- de processar com sucesso, e quanto tempo levou desde que chegou?").
+SELECT
+  execution_id,
+  MIN(CASE WHEN origem = 'unzip_dtcc'    THEN "timestamp" END) AS descompactado_em,
+  MIN(CASE WHEN origem = 'trigger_bronze' THEN "timestamp" END) AS disparado_em,
+  MIN(CASE WHEN origem = 'quality_check'  THEN status END)      AS qualidade,
+  MIN(CASE WHEN origem = 'glue_job'       THEN status END)      AS desfecho_glue,
+  MIN(CASE WHEN origem = 'glue_job'       THEN duracao_segundos END) AS duracao_glue_segundos
+FROM <DATABASE>.controle_execucoes
+WHERE execution_id IS NOT NULL
+GROUP BY execution_id
+ORDER BY descompactado_em DESC;
 
 -- Nota: MSCK REPAIR precisa rodar de novo pra enxergar partições
 -- (dt=...) novas -- o mesmo limite que já existia na tabela dtcc_bronze.

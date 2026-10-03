@@ -37,9 +37,10 @@ def _csv_bytes(linhas: list, colunas: list) -> bytes:
     return buf.getvalue().encode("utf-8-sig")
 
 
-def _mock_clients(corpo_csv: bytes):
+def _mock_clients(corpo_csv: bytes, execution_id: str = "exec-fixo-teste"):
     fake_s3 = mock.Mock()
     fake_s3.get_object.return_value = {"Body": io.BytesIO(corpo_csv)}
+    fake_s3.head_object.return_value = {"Metadata": {"execution-id": execution_id}}
     fake_sns = mock.Mock()
 
     def _client(nome, *a, **kw):
@@ -173,7 +174,7 @@ def test_registra_execucao_na_tabela_de_controle_mesmo_sem_problema(monkeypatch)
         ],
         COLUNAS_OK,
     )
-    fake_s3, fake_sns, client_fn = _mock_clients(corpo)
+    fake_s3, fake_sns, client_fn = _mock_clients(corpo, execution_id="exec-abc")
     modulo = _carregar_modulo(monkeypatch, client_fn)
 
     modulo.handler(_evento_eventbridge("meu-bucket", "raw/dtcc/a.csv"), context=None)
@@ -186,6 +187,7 @@ def test_registra_execucao_na_tabela_de_controle_mesmo_sem_problema(monkeypatch)
     assert registro["origem"] == "quality_check"
     assert registro["status"] == "ok"
     assert registro["linhas"] == 1
+    assert registro["execution_id"] == "exec-abc"
 
 
 def test_registro_na_tabela_de_controle_marca_status_problema(monkeypatch):

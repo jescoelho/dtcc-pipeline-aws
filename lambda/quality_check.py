@@ -66,9 +66,17 @@ LINHAS_MINIMAS = 1
 def handler(event, context):
     bucket = event["detail"]["bucket"]["name"]
     key = event["detail"]["object"]["key"]
+    execution_id = _buscar_execution_id(bucket, key)
     resultado = _checar(bucket, key)
-    _registrar_execucao(bucket, resultado)
+    _registrar_execucao(bucket, resultado, execution_id)
     return {"checado": resultado}
+
+
+def _buscar_execution_id(bucket: str, key: str) -> str:
+    """Mesmo execution_id que o trigger_bronze.py lê -- ver o docstring
+    lá para a explicação completa de como ele nasce e se propaga."""
+    cabecalho = s3.head_object(Bucket=bucket, Key=key)
+    return cabecalho.get("Metadata", {}).get("execution-id") or str(uuid.uuid4())
 
 
 def _checar(bucket: str, key: str) -> dict:
@@ -109,7 +117,7 @@ def _checar(bucket: str, key: str) -> dict:
     return resultado
 
 
-def _registrar_execucao(bucket: str, resultado: dict) -> None:
+def _registrar_execucao(bucket: str, resultado: dict, execution_id: str) -> None:
     agora = datetime.now(timezone.utc)
     registro = {
         "timestamp": agora.isoformat(),
@@ -118,6 +126,7 @@ def _registrar_execucao(bucket: str, resultado: dict) -> None:
         "linhas": resultado["linhas"],
         "problemas": resultado["problemas"],
         "status": "problema" if resultado["problemas"] else "ok",
+        "execution_id": execution_id,
     }
     log_key = f"logs/execucoes/dt={agora.strftime('%Y-%m-%d')}/{uuid.uuid4()}.json"
     s3.put_object(Bucket=bucket, Key=log_key, Body=json.dumps(registro).encode("utf-8"))

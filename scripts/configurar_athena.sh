@@ -92,10 +92,13 @@ sql_controle_execucoes="CREATE EXTERNAL TABLE IF NOT EXISTS ${DATABASE}.controle
   \`timestamp\` string,
   origem string,
   csv string,
+  zip string,
   job_run_id string,
+  execution_id string,
   linhas int,
   problemas array<string>,
-  status string
+  status string,
+  duracao_segundos int
 )
 PARTITIONED BY (dt string)
 ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
@@ -103,6 +106,15 @@ LOCATION 's3://${BUCKET}/logs/execucoes/'"
 
 executar "Criando/confirmando tabela dtcc_bronze" "$sql_dtcc_bronze"
 executar "Atualizando partições de dtcc_bronze (MSCK REPAIR)" "MSCK REPAIR TABLE ${DATABASE}.dtcc_bronze"
+
+# DROP (só metadado -- não toca nos dados em s3://.../logs/execucoes/) em
+# vez de "CREATE IF NOT EXISTS": o schema de controle_execucoes mudou
+# (novas colunas zip, execution_id, duracao_segundos) e CREATE EXTERNAL
+# TABLE IF NOT EXISTS não atualiza o schema de uma tabela que já existe
+# -- rodar o script de novo sem o DROP deixaria as colunas novas de fora,
+# silenciosamente.
+executar "Recriando tabela controle_execucoes (schema pode ter mudado)" \
+  "DROP TABLE IF EXISTS ${DATABASE}.controle_execucoes"
 executar "Criando/confirmando tabela controle_execucoes" "$sql_controle_execucoes"
 executar "Atualizando partições de controle_execucoes (MSCK REPAIR)" "MSCK REPAIR TABLE ${DATABASE}.controle_execucoes"
 

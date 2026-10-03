@@ -41,6 +41,12 @@ data "aws_iam_policy_document" "unzip_lambda_s3" {
     actions   = ["s3:PutObject"]
     resources = ["${aws_s3_bucket.lake.arn}/raw/dtcc/*"]
   }
+  statement {
+    # Tabela de controle (logs/execucoes/, ver athena/queries.sql) -- o
+    # primeiro registro do fluxo end-to-end, gravado na descompactação.
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.lake.arn}/logs/execucoes/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "unzip_lambda_s3" {
@@ -93,6 +99,13 @@ data "aws_iam_policy_document" "trigger_bronze_glue" {
   statement {
     actions   = ["glue:StartJobRun"]
     resources = [aws_glue_job.bronze.arn]
+  }
+  statement {
+    # head_object no CSV que chegou, só pra ler o metadado execution-id
+    # gravado pelo unzip_dtcc.py (ver trigger_bronze.py) -- não lê o
+    # corpo do arquivo, só o cabeçalho.
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.lake.arn}/raw/dtcc/*"]
   }
   statement {
     # Tabela de controle (logs/execucoes/, ver athena/queries.sql) -- um
@@ -155,6 +168,16 @@ resource "aws_cloudwatch_event_rule" "csv_arrived" {
   name        = "${var.prefix}-csv-arrived"
   description = "CSV chegou em raw/dtcc/ -- dispara o Glue Bronze e a checagem de qualidade, em paralelo"
 
+  # Bug real encontrado em produção: combinar {prefix}+{suffix} no mesmo
+  # array de "key" deveria funcionar como AND (é o que a documentação da
+  # AWS descreve), mas na prática não filtrou -- um arquivo em
+  # athena-results/*.csv (gerado pelo próprio script de configuração do
+  # Athena, no mesmo bucket) disparou esta regra, porque bate com o
+  # suffix mesmo não começando com raw/dtcc/. Resultado: 2 execuções do
+  # Glue disparadas à toa. Correção: usar só o prefixo -- raw/dtcc/ é
+  # exclusivo da Lambda unzip_dtcc, então basta isso pra identificar o
+  # evento certo, sem depender de uma combinação que não se mostrou
+  # confiável nesse nível de aninhamento (detail.object.key).
   event_pattern = jsonencode({
     source        = ["aws.s3"]
     "detail-type" = ["Object Created"]
@@ -163,7 +186,6 @@ resource "aws_cloudwatch_event_rule" "csv_arrived" {
       object = {
         key = [
           { prefix = "raw/dtcc/" },
-          { suffix = ".csv" },
         ]
       }
     }
