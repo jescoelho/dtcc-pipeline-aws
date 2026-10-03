@@ -139,6 +139,15 @@ do EventBridge (`aws_cloudwatch_event_rule.csv_arrived`) tem os dois como
 alvos. O `.zip` continua indo direto do S3 pra Lambda de descompactar --
 um só consumidor, sem ambiguidade, sem precisar do EventBridge.
 
+**Pegadinha real que isso trouxe:** o formato do evento que chega na
+Lambda muda conforme o caminho. Direto do S3 (`unzip_dtcc`), é
+`{"Records": [{"s3": {"bucket": ..., "object": ...}}]}`. Via EventBridge
+(`trigger_bronze`, `quality_check`), é o evento nativo "S3 Object
+Created": `{"detail": {"bucket": {"name": ...}, "object": {"key":
+...}}}`, sem `Records` nenhum. Rodar `aws logs tail` nas duas Lambdas
+depois do primeiro `apply` mostrou exatamente esse erro (`KeyError:
+'Records'`) -- as duas liam o evento como se fosse o formato antigo.
+
 Cadeia completa agora:
 ```
 .zip em raw/dtcc_zip/ -> Lambda descompacta

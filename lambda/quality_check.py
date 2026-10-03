@@ -1,14 +1,27 @@
-"""Lambda disparada por evento do S3: confere qualidade básica do CSV que
-acabou de chegar em raw/dtcc/, ANTES (em paralelo, não bloqueando) do
-Glue processar.
+"""Lambda disparada por evento do EventBridge: confere qualidade básica
+do CSV que acabou de chegar em raw/dtcc/, ANTES (em paralelo, não
+bloqueando) do Glue processar.
+
+Alvo de aws_cloudwatch_event_rule.csv_arrived (terraform/lambda.tf),
+MESMA regra que dispara lambda/trigger_bronze.py -- as duas são alvos
+independentes de um único evento do EventBridge, nenhuma espera a outra.
+Formato do evento é o "S3 Object Created" nativo do EventBridge (ver
+trigger_bronze.py para a explicação completa de por que não é o formato
+{"Records": [...]} do S3 direto):
+
+  {
+    "detail-type": "Object Created",
+    "source": "aws.s3",
+    "detail": {
+      "bucket": {"name": "..."},
+      "object": {"key": "..."}
+    }
+  }
 
 Responsabilidade única -- só isso. Não dispara o Glue (isso é
-lambda/trigger_bronze.py) e não descompacta (lambda/unzip_dtcc.py).
-Reage ao mesmo evento do S3 que a trigger_bronze, mas como alvo
-independente dentro da mesma notificação -- as duas rodam em paralelo,
-sem uma esperar a outra. Se o arquivo tiver problema, publica no mesmo
-tópico SNS do alerta de falha do Glue (terraform/observabilidade.tf);
-não bloqueia a ingestão, só avisa.
+lambda/trigger_bronze.py) e não descompacta (lambda/unzip_dtcc.py). Se o
+arquivo tiver problema, publica no mesmo tópico SNS do alerta de falha do
+Glue (terraform/observabilidade.tf); não bloqueia a ingestão, só avisa.
 
 Checagens (as três mais simples que capturam o essencial, na ordem do
 que já vimos quebrar no dado real):
@@ -40,12 +53,9 @@ LINHAS_MINIMAS = 1
 
 
 def handler(event, context):
-    resultados = []
-    for record in event["Records"]:
-        bucket = record["s3"]["bucket"]["name"]
-        key = record["s3"]["object"]["key"]
-        resultados.append(_checar(bucket, key))
-    return {"checados": resultados}
+    bucket = event["detail"]["bucket"]["name"]
+    key = event["detail"]["object"]["key"]
+    return {"checado": _checar(bucket, key)}
 
 
 def _checar(bucket: str, key: str) -> dict:

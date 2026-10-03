@@ -1,5 +1,8 @@
 """Testes da Lambda de checagem de qualidade (lambda/quality_check.py),
-com S3 e SNS mockados -- sem precisar de AWS de verdade."""
+com S3 e SNS mockados -- sem precisar de AWS de verdade.
+
+Evento no formato "S3 Object Created" do EventBridge (não o {"Records":
+[...]} do S3 direto) -- ver o docstring de lambda/quality_check.py."""
 import csv
 import importlib
 import io
@@ -17,8 +20,12 @@ COLUNAS_OK = [
 ]
 
 
-def _evento_s3(bucket: str, key: str) -> dict:
-    return {"Records": [{"s3": {"bucket": {"name": bucket}, "object": {"key": key}}}]}
+def _evento_eventbridge(bucket: str, key: str) -> dict:
+    return {
+        "detail-type": "Object Created",
+        "source": "aws.s3",
+        "detail": {"bucket": {"name": bucket}, "object": {"key": key}},
+    }
 
 
 def _csv_bytes(linhas: list, colunas: list) -> bytes:
@@ -64,10 +71,10 @@ def test_csv_valido_nao_publica_alerta(monkeypatch):
     fake_s3, fake_sns, client_fn = _mock_clients(corpo)
     modulo = _carregar_modulo(monkeypatch, client_fn)
 
-    resposta = modulo.handler(_evento_s3("bucket-teste", "raw/dtcc/a.csv"), context=None)
+    resposta = modulo.handler(_evento_eventbridge("bucket-teste", "raw/dtcc/a.csv"), context=None)
 
-    assert resposta["checados"][0]["problemas"] == []
-    assert resposta["checados"][0]["linhas"] == 1
+    assert resposta["checado"]["problemas"] == []
+    assert resposta["checado"]["linhas"] == 1
     fake_sns.publish.assert_not_called()
 
 
@@ -76,10 +83,10 @@ def test_csv_vazio_publica_alerta(monkeypatch):
     fake_s3, fake_sns, client_fn = _mock_clients(corpo)
     modulo = _carregar_modulo(monkeypatch, client_fn)
 
-    resposta = modulo.handler(_evento_s3("bucket-teste", "raw/dtcc/vazio.csv"), context=None)
+    resposta = modulo.handler(_evento_eventbridge("bucket-teste", "raw/dtcc/vazio.csv"), context=None)
 
-    assert resposta["checados"][0]["linhas"] == 0
-    assert resposta["checados"][0]["problemas"]
+    assert resposta["checado"]["linhas"] == 0
+    assert resposta["checado"]["problemas"]
     fake_sns.publish.assert_called_once()
 
 
@@ -98,9 +105,11 @@ def test_coluna_ausente_publica_alerta(monkeypatch):
     fake_s3, fake_sns, client_fn = _mock_clients(corpo)
     modulo = _carregar_modulo(monkeypatch, client_fn)
 
-    resposta = modulo.handler(_evento_s3("bucket-teste", "raw/dtcc/sem_coluna.csv"), context=None)
+    resposta = modulo.handler(
+        _evento_eventbridge("bucket-teste", "raw/dtcc/sem_coluna.csv"), context=None
+    )
 
-    assert any("colunas ausentes" in p for p in resposta["checados"][0]["problemas"])
+    assert any("colunas ausentes" in p for p in resposta["checado"]["problemas"])
     fake_sns.publish.assert_called_once()
 
 
@@ -120,16 +129,16 @@ def test_action_type_inesperado_publica_alerta(monkeypatch):
     modulo = _carregar_modulo(monkeypatch, client_fn)
 
     resposta = modulo.handler(
-        _evento_s3("bucket-teste", "raw/dtcc/tipo_estranho.csv"), context=None
+        _evento_eventbridge("bucket-teste", "raw/dtcc/tipo_estranho.csv"), context=None
     )
 
     assert any(
-        "Action type inesperado" in p for p in resposta["checados"][0]["problemas"]
+        "Action type inesperado" in p for p in resposta["checado"]["problemas"]
     )
     fake_sns.publish.assert_called_once()
 
 
-def test_processa_varios_records_do_mesmo_evento(monkeypatch):
+def test_cada_evento_e_checado_independentemente(monkeypatch):
     corpo = _csv_bytes(
         [
             {
@@ -144,12 +153,8 @@ def test_processa_varios_records_do_mesmo_evento(monkeypatch):
     fake_s3, fake_sns, client_fn = _mock_clients(corpo)
     modulo = _carregar_modulo(monkeypatch, client_fn)
 
-    evento = {
-        "Records": [
-            {"s3": {"bucket": {"name": "b"}, "object": {"key": "raw/dtcc/a.csv"}}},
-            {"s3": {"bucket": {"name": "b"}, "object": {"key": "raw/dtcc/b.csv"}}},
-        ]
-    }
-    resposta = modulo.handler(evento, context=None)
+    resposta_1 = modulo.handler(_evento_eventbridge("b", "raw/dtcc/a.csv"), context=None)
+    resposta_2 = modulo.handler(_evento_eventbridge("b", "raw/dtcc/b.csv"), context=None)
 
-    assert len(resposta["checados"]) == 2
+    assert resposta_1["checado"]["csv"] == "s3://b/raw/dtcc/a.csv"
+    assert resposta_2["checado"]["csv"] == "s3://b/raw/dtcc/b.csv"
