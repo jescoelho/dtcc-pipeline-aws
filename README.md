@@ -139,14 +139,39 @@ partição é sobrescrita de forma idêntica), mas é redundante. Resolver
 isso de verdade é o que a etapa de Step Functions (roteiro, item 2)
 cobre, com idempotência e controle de execução única por vez.
 
+### Observabilidade, etapa 1: avisar quando o Glue Bronze falhar
+
+Caminho nativo da AWS, sem Lambda nova (`terraform/observabilidade.tf`):
+o próprio Glue emite um evento de mudança de estado; uma regra do
+**EventBridge** filtra esse evento para `FAILED`/`TIMEOUT`/`ERROR` e
+publica num tópico **SNS**, que manda e-mail pro mesmo endereço do alerta
+de custo (`var.budget_email`).
+
+```
+Glue Job State Change (evento nativo)
+  -> EventBridge rule (filtra: job = bronze, state = FAILED/TIMEOUT/ERROR)
+  -> SNS topic
+  -> e-mail
+```
+
+De propósito, cobre só **falha** -- não "sucesso". Um e-mail por execução
+bem-sucedida, todo dia, é ruído que ensina a ignorar o canal; falha é o
+caso em que alguém realmente precisa olhar.
+
+**Depois do `terraform apply`, a AWS manda um e-mail de confirmação da
+inscrição no SNS** ("AWS Notification - Subscription Confirmation") --
+sem clicar em "Confirm subscription" nesse e-mail, os alertas não chegam.
+
+Isto cobre só "o job rodou e explodiu". Não cobre "o dado que chegou está
+estranho mas o job roda sem erro" -- essa é a tarefa de checagem de
+qualidade abaixo, que continua pendente.
+
 ## Tarefas futuras (ainda não construídas)
 
 - **Checagem de qualidade de dados assim que o CSV aparecer**, antes do
   Glue rodar (volume, schema, `Action type` dentro do esperado) -- reagindo
   ao mesmo evento do S3 que dispara a Lambda de trigger do Glue, sem
   acoplar as duas coisas na mesma função.
-- **Notificar alguém** (e-mail, Slack) quando o pipeline falhar ou quando
-  um arquivo novo for processado com sucesso.
 
 **Depois, também pendente:** mover o `scripts/ingerir_cumulative.sh` (o
 download inicial) para dentro de uma Lambda com EventBridge Schedule,
