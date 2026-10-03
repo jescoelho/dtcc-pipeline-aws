@@ -514,6 +514,62 @@ histórico, e que registros de outras origens (`trigger_bronze`,
   real do Cumulative ao longo de semanas -- ajustar depois de observar
   alguns alertas (falsos positivos ou negativos) é esperado.
 
+### Protótipo: AWS Glue Data Quality, lado a lado com quality_check.py
+
+Pergunta que motivou isso: como automatizar qualidade/observabilidade
+de forma que generalize pra qualquer tabela, não só pra este pipeline?
+Resposta parcial: várias dimensões de qualidade (completude, validade
+de domínio, unicidade) já são um serviço nativo da AWS -- **Glue Data
+Quality** (DQDL) -- em vez de código Python escrito à mão. Dado que o
+pipeline já roda em Glue, vale comparar antes de generalizar o motor
+próprio.
+
+`glue/bronze_ingest.py` agora roda um `EvaluateDataQuality` com um
+ruleset DQDL equivalente ao que `quality_check.py` já checa
+(`ColumnExists`, `IsComplete`, `ColumnValues` pro domínio de Action
+type, `RowCount`) mais uma checagem que o Python **não tem**:
+`Uniqueness "Dissemination Identifier" > 0.99`. O resultado é gravado
+em `logs/execucoes/` com `origem="glue_data_quality"`, mesmo
+`execution_id` do resto do fluxo -- a query "Comparação lado a lado"
+em `athena/queries.sql` junta os dois veredictos (Python vs. Glue DQ)
+pelo mesmo `execution_id`.
+
+Decisão de escopo: `enableDataQualityResultsPublishing` (o repositório
+nativo de resultados do Glue) ficou **desligado** -- evita precisar
+descobrir e validar permissões IAM adicionais específicas do serviço
+de Data Quality; `enableDataQualityCloudWatchMetrics` ficou ligado
+(só precisa de `cloudwatch:PutMetricData`, já adicionado ao role do
+Glue em `terraform/main.tf`) e publica pass/fail por regra como
+métrica.
+
+**Importante -- diferente de toda outra extensão deste README: isto
+NÃO foi validado em execução real ainda.** As Lambdas foram testadas
+com `pytest` e mocks antes de qualquer deploy; não existe Spark/Glue
+Data Quality rodando localmente, então a primeira vez que este código
+roda de verdade é na AWS. Plano de validação (próximo passo, não
+executado ainda):
+1. `terraform apply` (cria a permissão de CloudWatch, atualiza o
+   script do Glue).
+2. `./scripts/configurar_athena.sh` (schema de `controle_execucoes`
+   ganhou a coluna `regras`).
+3. Disparar uma ingestão e, se o job terminar com `succeeded`,
+   conferir: (a) se o `EvaluateDataQuality` nem quebrou a sintaxe do
+   ruleset -- primeiro risco real, nunca rodou; (b) se o registro
+   `glue_data_quality` apareceu em `controle_execucoes` com as 8
+   regras; (c) se o veredicto bate com o do `quality_check.py` pro
+   mesmo `execution_id`.
+4. Se o job falhar, o motivo mais provável é erro de sintaxe no DQDL
+   ou nome de transform/import errado (`awsgluedq.transforms` -- não
+   testado) -- `aws glue get-job-run` com `--include-job-definition`
+   e o log do job (`/aws-glue/jobs/...`) têm o erro real.
+
+**Limite já conhecido, mesmo sem rodar**: isto cobre só a Bronze. As
+checagens 4-6 (atualidade, consistência sazonal, linhagem de dado) que
+discutimos como parte de generalizar observabilidade continuam fora
+do escopo do Glue Data Quality -- são sobre o *pipeline*, não sobre o
+*dado isolado*, e continuam sendo papel da tabela de controle
+(`logs/execucoes/`), não deste protótipo.
+
 ## Tarefas futuras (ainda não construídas)
 
 - **Agendar a ingestão**: mover `scripts/ingerir_cumulative.sh` (o

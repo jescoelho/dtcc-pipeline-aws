@@ -105,6 +105,15 @@ data "aws_iam_policy_document" "glue_s3" {
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
     resources = [aws_s3_bucket.lake.arn, "${aws_s3_bucket.lake.arn}/*"]
   }
+  statement {
+    # Protótipo de Glue Data Quality (ver glue/bronze_ingest.py) --
+    # enableDataQualityCloudWatchMetrics publica pass/fail por regra
+    # como métrica no namespace "Glue Data Quality". Não habilitamos
+    # enableDataQualityResultsPublishing (repositório nativo do Glue),
+    # então não precisa de permissão de Glue Data Quality API, só esta.
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_role_policy" "glue_s3" {

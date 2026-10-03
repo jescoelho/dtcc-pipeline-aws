@@ -70,7 +70,8 @@ CREATE EXTERNAL TABLE IF NOT EXISTS <DATABASE>.controle_execucoes (
   linhas           int,
   problemas        array<string>,
   status           string,
-  duracao_segundos int
+  duracao_segundos int,
+  regras           string
 )
 PARTITIONED BY (dt string)
 ROW FORMAT SERDE 'org.openx.data.jsonserde.JsonSerDe'
@@ -119,6 +120,21 @@ FROM <DATABASE>.controle_execucoes
 WHERE execution_id IS NOT NULL
 GROUP BY execution_id
 ORDER BY descompactado_em DESC;
+
+-- Comparação lado a lado: quality_check.py (Python puro) vs. Glue Data
+-- Quality (protótipo, ver glue/bronze_ingest.py) -- mesmo execution_id,
+-- dois veredictos independentes sobre o mesmo arquivo. Objetivo:
+-- decidir qual abordagem generalizar pras próximas fontes.
+SELECT
+  execution_id,
+  MIN(CASE WHEN origem = 'quality_check'     THEN status END) AS veredito_python,
+  MIN(CASE WHEN origem = 'glue_data_quality' THEN status END) AS veredito_glue_dq,
+  MIN(CASE WHEN origem = 'glue_data_quality' THEN regras END) AS regras_glue_dq
+FROM <DATABASE>.controle_execucoes
+WHERE execution_id IS NOT NULL
+  AND origem IN ('quality_check', 'glue_data_quality')
+GROUP BY execution_id
+ORDER BY execution_id DESC;
 
 -- Nota: MSCK REPAIR precisa rodar de novo pra enxergar partições
 -- (dt=...) novas -- o mesmo limite que já existia na tabela dtcc_bronze.
