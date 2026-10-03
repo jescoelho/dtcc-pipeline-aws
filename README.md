@@ -475,6 +475,45 @@ algum momento. Correção definitiva seria processar o CSV em streaming
 (iterar linha a linha a partir do `Body`, sem nunca ter o arquivo
 inteiro na memória), não construída agora.
 
+### Observabilidade, etapa 4: checagem de volume contra o histórico
+
+Extensão que ficou pendente desde a criação da tabela de controle
+(etapa 3 de boas práticas): antes, a checagem de qualidade só sabia se
+o arquivo de hoje estava vazio (checagem absoluta) -- não dava pra
+detectar uma queda real de volume (ex.: metade dos registros de sempre)
+que ainda assim não é zero.
+
+`lambda/quality_check.py` agora tem uma quarta checagem: lê os
+registros de `quality_check` dos últimos `DIAS_HISTORICO` dias (7, por
+enquanto) direto de `logs/execucoes/` -- sem passar pelo Athena, só
+`list_objects_v2` + `get_object` no próprio S3, porque é pouco volume
+de arquivos JSON por dia e isso evita a latência e a dependência de
+partição atualizada (MSCK REPAIR) que uma query no Athena teria. Se o
+volume de hoje cair mais de `QUEDA_MAXIMA_TOLERADA` (50%) da média
+histórica, isso entra como mais um problema -- mesmo alerta por SNS que
+as outras três checagens já usam.
+
+Se não existir histórico ainda (primeiros dias do pipeline), a
+checagem é simplesmente pulada -- não gera falso alerta comparando
+contra nada.
+
+Testado com S3 mockado simulando histórico
+(`tests/test_lambda_quality_check.py`): confirma o alerta disparando
+numa queda real, o silêncio numa variação normal, o comportamento sem
+histórico, e que registros de outras origens (`trigger_bronze`,
+`glue_job`) na mesma tabela não contaminam a média.
+
+**Limites assumidos nesta etapa**:
+- A média inclui dias com problema (não filtra por `status == "ok"`) --
+  uma queda real e sustentada rebaixa a própria média que a detectaria,
+  então uma degradação **gradual** pode passar sem alertar; só uma
+  queda **abrupta** contra a média recente é pega. Comparar contra uma
+  baseline mais robusta (mediana, ou só dias "ok") é extensão futura.
+- Os limites (`DIAS_HISTORICO=7`, `QUEDA_MAXIMA_TOLERADA=0.5`) são
+  números redondos de partida, não calibrados contra o comportamento
+  real do Cumulative ao longo de semanas -- ajustar depois de observar
+  alguns alertas (falsos positivos ou negativos) é esperado.
+
 ## Tarefas futuras (ainda não construídas)
 
 - **Agendar a ingestão**: mover `scripts/ingerir_cumulative.sh` (o

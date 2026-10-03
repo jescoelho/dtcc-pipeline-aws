@@ -41,6 +41,22 @@ data "aws_iam_policy_document" "quality_check_lambda_permissions" {
     actions   = ["s3:PutObject"]
     resources = ["${aws_s3_bucket.lake.arn}/logs/execucoes/*"]
   }
+  statement {
+    # Lê o próprio histórico (últimos N dias) pra comparar o volume de
+    # hoje com a média -- extensão da checagem de qualidade (ver
+    # _media_historica em lambda/quality_check.py).
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.lake.arn}/logs/execucoes/*"]
+  }
+  statement {
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.lake.arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["logs/execucoes/*"]
+    }
+  }
 }
 
 resource "aws_iam_role_policy" "quality_check_lambda_permissions" {

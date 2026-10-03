@@ -23,21 +23,26 @@ lambda/trigger_bronze.py) e não descompacta (lambda/unzip_dtcc.py). Se o
 arquivo tiver problema, publica no mesmo tópico SNS do alerta de falha do
 Glue (terraform/observabilidade.tf); não bloqueia a ingestão, só avisa.
 
-Checagens (as três mais simples que capturam o essencial, na ordem do
-que já vimos quebrar no dado real):
+Checagens, na ordem do que já vimos quebrar no dado real:
   1. Schema: as colunas-chave usadas pela Bronze/Silver estão presentes.
-  2. Volume: o arquivo não está vazio.
+  2. Volume absoluto: o arquivo não está vazio.
   3. Domínio: todo valor de "Action type" está no conjunto conhecido
      (NEWT/MODI/CORR/TERM/EROR/REVI) -- um valor novo pode ser o DTCC
      mudando o layout, o que já aconteceu uma vez neste projeto.
+  4. Volume relativo ao histórico: compara a contagem de linhas do
+     arquivo de hoje com a média dos últimos DIAS_HISTORICO dias (lidos
+     de logs/execucoes/, a própria tabela de controle que esta Lambda
+     alimenta). Fecha a extensão futura que estava pendente desde a
+     criação da tabela de controle -- antes, só dava pra comparar o
+     arquivo isolado contra si mesmo (vazio ou não), não contra a
+     tendência real.
 
 Também grava um registro em logs/execucoes/ (tabela de controle
 consultável no Athena, ver athena/queries.sql) com a contagem de linhas
 e os problemas encontrados -- diferente do log do CloudWatch (texto
 solto, só serve pra depurar um erro específico), isso é dado
 estruturado: histórico de volume e qualidade por dia, consultável com
-SQL, base pra detectar queda gradual (tarefa futura já registrada no
-README).
+SQL.
 
 Variável de ambiente esperada: SNS_TOPIC_ARN.
 """
@@ -46,7 +51,7 @@ import io
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import boto3
 
@@ -61,6 +66,13 @@ COLUNAS_ESPERADAS = {
 }
 ACTION_TYPES_ESPERADOS = {"NEWT", "MODI", "CORR", "TERM", "EROR", "REVI"}
 LINHAS_MINIMAS = 1
+
+# Quantos dias de histórico olhar pra calcular a média de volume, e o
+# quanto abaixo dela já conta como problema (0.5 = alerta se cair mais
+# de 50% da média). Números redondos, de propósito -- calibrar com dado
+# real é tarefa futura, não um valor definitivo.
+DIAS_HISTORICO = 7
+QUEDA_MAXIMA_TOLERADA = 0.5
 
 
 def handler(event, context):
@@ -103,6 +115,15 @@ def _checar(bucket: str, key: str) -> dict:
     if inesperados:
         problemas.append(f"Action type inesperado: {sorted(inesperados)}")
 
+    baseline = _media_historica(bucket)
+    if baseline is not None:
+        limite = baseline * (1 - QUEDA_MAXIMA_TOLERADA)
+        if linhas < limite:
+            problemas.append(
+                f"volume muito abaixo do histórico: {linhas} linhas "
+                f"(média dos últimos {DIAS_HISTORICO} dias: {baseline:.0f})"
+            )
+
     resultado = {"csv": f"s3://{bucket}/{key}", "linhas": linhas, "problemas": problemas}
 
     if problemas:
@@ -115,6 +136,38 @@ def _checar(bucket: str, key: str) -> dict:
         )
 
     return resultado
+
+
+def _media_historica(bucket: str, dias: int = DIAS_HISTORICO):
+    """Lê os registros de quality_check dos últimos `dias` dias (de
+    logs/execucoes/, a mesma tabela de controle que esta Lambda escreve)
+    e devolve a média de linhas. None se não houver histórico ainda
+    (primeiros dias do pipeline) -- nesse caso, a checagem é
+    simplesmente pulada, não vira falso alerta.
+
+    Limite assumido: inclui dias com problema no cálculo da média (não
+    filtra por status == "ok") -- uma queda real e sustentada rebaixa a
+    própria média que a detectaria, então uma degradação gradual (não
+    um salto único) pode passar sem alertar. Comparar com uma baseline
+    mais robusta (mediana, ou só dias "ok") é extensão futura.
+    """
+    hoje = datetime.now(timezone.utc).date()
+    volumes = []
+    paginador = s3.get_paginator("list_objects_v2")
+
+    for i in range(1, dias + 1):
+        dia = hoje - timedelta(days=i)
+        prefixo = f"logs/execucoes/dt={dia.isoformat()}/"
+        for pagina in paginador.paginate(Bucket=bucket, Prefix=prefixo):
+            for item in pagina.get("Contents", []):
+                corpo = s3.get_object(Bucket=bucket, Key=item["Key"])["Body"].read()
+                registro = json.loads(corpo)
+                if registro.get("origem") == "quality_check" and registro.get("linhas") is not None:
+                    volumes.append(registro["linhas"])
+
+    if not volumes:
+        return None
+    return sum(volumes) / len(volumes)
 
 
 def _registrar_execucao(bucket: str, resultado: dict, execution_id: str) -> None:

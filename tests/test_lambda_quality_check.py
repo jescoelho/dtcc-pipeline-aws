@@ -37,10 +37,34 @@ def _csv_bytes(linhas: list, colunas: list) -> bytes:
     return buf.getvalue().encode("utf-8-sig")
 
 
-def _mock_clients(corpo_csv: bytes, execution_id: str = "exec-fixo-teste"):
+def _mock_clients(corpo_csv: bytes, execution_id: str = "exec-fixo-teste", historico: list = None):
+    """historico: lista de dicts (registros de quality_check já
+    gravados em dias anteriores) que _media_historica deve "encontrar"
+    ao listar logs/execucoes/. Default vazio = sem histórico ainda, que
+    é o caso normal da maioria dos testes (a checagem de volume
+    relativo simplesmente não roda)."""
+    historico = historico or []
+    historico_por_key = {}
+    contents = []
+    for i, registro in enumerate(historico):
+        key = f"logs/execucoes/dt=2026-01-{i + 1:02d}/{i}.json"
+        historico_por_key[key] = json.dumps(registro).encode("utf-8")
+        contents.append({"Key": key})
+
     fake_s3 = mock.Mock()
-    fake_s3.get_object.return_value = {"Body": io.BytesIO(corpo_csv)}
+
+    def _get_object(Bucket, Key):
+        if Key in historico_por_key:
+            return {"Body": io.BytesIO(historico_por_key[Key])}
+        return {"Body": io.BytesIO(corpo_csv)}
+
+    fake_s3.get_object.side_effect = _get_object
     fake_s3.head_object.return_value = {"Metadata": {"execution-id": execution_id}}
+
+    fake_paginator = mock.Mock()
+    fake_paginator.paginate.return_value = [{"Contents": contents}] if contents else []
+    fake_s3.get_paginator.return_value = fake_paginator
+
     fake_sns = mock.Mock()
 
     def _client(nome, *a, **kw):
@@ -201,3 +225,98 @@ def test_registro_na_tabela_de_controle_marca_status_problema(monkeypatch):
     registro = json.loads(kwargs["Body"])
     assert registro["status"] == "problema"
     assert registro["problemas"]
+
+
+def test_volume_abaixo_do_historico_publica_alerta(monkeypatch):
+    # Histórico de 5 dias com 100 linhas cada (média = 100); arquivo de
+    # hoje vem com 1 linha só -- queda bem maior que os 50% tolerados.
+    historico = [
+        {"origem": "quality_check", "linhas": 100, "status": "ok"} for _ in range(5)
+    ]
+    corpo = _csv_bytes(
+        [
+            {
+                "Dissemination Identifier": "1",
+                "Original Dissemination Identifier": "",
+                "Action type": "NEWT",
+                "Event timestamp": "2026-10-02T19:00:00",
+            }
+        ],
+        COLUNAS_OK,
+    )
+    fake_s3, fake_sns, client_fn = _mock_clients(corpo, historico=historico)
+    modulo = _carregar_modulo(monkeypatch, client_fn)
+
+    resposta = modulo.handler(_evento_eventbridge("meu-bucket", "raw/dtcc/a.csv"), context=None)
+
+    assert any("volume muito abaixo do histórico" in p for p in resposta["checado"]["problemas"])
+    fake_sns.publish.assert_called_once()
+
+
+def test_volume_normal_comparado_ao_historico_nao_alerta(monkeypatch):
+    # Histórico de 5 dias com 10 linhas cada (média = 10); arquivo de
+    # hoje vem com 9 -- dentro da tolerância de 50%, não deve alertar.
+    historico = [{"origem": "quality_check", "linhas": 10, "status": "ok"} for _ in range(5)]
+    corpo = _csv_bytes(
+        [
+            {
+                "Dissemination Identifier": str(i),
+                "Original Dissemination Identifier": "",
+                "Action type": "NEWT",
+                "Event timestamp": "2026-10-02T19:00:00",
+            }
+            for i in range(9)
+        ],
+        COLUNAS_OK,
+    )
+    fake_s3, fake_sns, client_fn = _mock_clients(corpo, historico=historico)
+    modulo = _carregar_modulo(monkeypatch, client_fn)
+
+    resposta = modulo.handler(_evento_eventbridge("meu-bucket", "raw/dtcc/a.csv"), context=None)
+
+    assert resposta["checado"]["problemas"] == []
+    fake_sns.publish.assert_not_called()
+
+
+def test_sem_historico_nao_roda_checagem_de_volume_relativo(monkeypatch):
+    # Sem nenhum registro histórico (pipeline nos primeiros dias) --
+    # mesmo um arquivo de 1 linha não deve ser comparado contra nada.
+    corpo = _csv_bytes(
+        [
+            {
+                "Dissemination Identifier": "1",
+                "Original Dissemination Identifier": "",
+                "Action type": "NEWT",
+                "Event timestamp": "2026-10-02T19:00:00",
+            }
+        ],
+        COLUNAS_OK,
+    )
+    fake_s3, fake_sns, client_fn = _mock_clients(corpo, historico=[])
+    modulo = _carregar_modulo(monkeypatch, client_fn)
+
+    resposta = modulo.handler(_evento_eventbridge("meu-bucket", "raw/dtcc/a.csv"), context=None)
+
+    assert resposta["checado"]["problemas"] == []
+
+
+def test_historico_ignora_registros_de_outras_origens(monkeypatch):
+    # trigger_bronze e glue_job também gravam em logs/execucoes/, mas
+    # não têm "linhas" com o mesmo significado (ou nem têm o campo) --
+    # a média não deve se confundir com eles.
+    historico = [
+        {"origem": "trigger_bronze", "job_run_id": "jr_1"},
+        {"origem": "glue_job", "status": "succeeded", "duracao_segundos": 90},
+        {"origem": "quality_check", "linhas": 5, "status": "ok"},
+    ]
+    corpo = _csv_bytes([], COLUNAS_OK)
+    fake_s3, fake_sns, client_fn = _mock_clients(corpo, historico=historico)
+    modulo = _carregar_modulo(monkeypatch, client_fn)
+
+    resposta = modulo.handler(_evento_eventbridge("meu-bucket", "raw/dtcc/vazio.csv"), context=None)
+
+    # média histórica efetiva = 5 (só o registro de quality_check conta)
+    # -- arquivo vazio (0 linhas) fica bem abaixo disso, mas o problema
+    # de "arquivo vazio" já cobre esse caso; o importante aqui é que não
+    # explodiu tentando ler "linhas" dos registros sem esse campo.
+    assert any("volume muito abaixo do histórico" in p for p in resposta["checado"]["problemas"])
