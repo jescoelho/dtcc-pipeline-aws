@@ -120,16 +120,30 @@ aws s3 ls s3://$(terraform output -raw bucket)/raw/dtcc/   # confere se o csv ap
 ### Disparando o Glue Bronze automaticamente (Lambda separada, Opção 2)
 
 Decisão: usar uma Lambda **dedicada só a isso** (`lambda/trigger_bronze.py`),
-disparada por um segundo evento do S3 (CSV aparece em `raw/dtcc/`), em vez
-de a mesma Lambda que descompacta também chamar o Glue. Motivo:
-responsabilidade única -- a Lambda de descompactar já está testada
-isoladamente sem precisar mockar Glue; se o `start_job_run` falhar, isso
-não deve derrubar a descompactação, que já funcionou; e dá pra encaixar
-outras reações ao mesmo evento (checagem de qualidade, notificação) sem
-tocar na Lambda de descompactar.
+disparada quando o CSV aparece em `raw/dtcc/`, em vez de a mesma Lambda
+que descompacta também chamar o Glue. Motivo: responsabilidade única --
+a Lambda de descompactar já está testada isoladamente sem precisar
+mockar Glue; se o `start_job_run` falhar, isso não deve derrubar a
+descompactação, que já funcionou; e dá pra encaixar outras reações ao
+mesmo evento (checagem de qualidade -- ver abaixo) sem tocar na Lambda de
+descompactar.
 
-Cadeia completa agora: `.zip` cai em `raw/dtcc_zip/` → Lambda descompacta
-→ `.csv` aparece em `raw/dtcc/` → segunda Lambda dispara o Glue Bronze.
+**Como o evento chega até ela:** o `.csv` em `raw/dtcc/` tem **dois**
+consumidores independentes (`trigger_bronze` e a checagem de qualidade,
+abaixo). O S3 não aceita duas regras com o mesmo prefixo+sufixo apontando
+para Lambdas diferentes (erro real que apareceu ao aplicar: "Configuration
+is ambiguously defined") -- ele não sabe que as duas devem disparar. Por
+isso o bucket manda esse evento também pro **EventBridge**
+(`eventbridge = true` no `aws_s3_bucket_notification`), e uma única regra
+do EventBridge (`aws_cloudwatch_event_rule.csv_arrived`) tem os dois como
+alvos. O `.zip` continua indo direto do S3 pra Lambda de descompactar --
+um só consumidor, sem ambiguidade, sem precisar do EventBridge.
+
+Cadeia completa agora:
+```
+.zip em raw/dtcc_zip/ -> Lambda descompacta
+.csv em raw/dtcc/ -> EventBridge rule -> [trigger_bronze, quality_check]  (paralelo)
+```
 
 **Aviso honesto sobre concorrência:** o job Glue Bronze lê a pasta
 `raw/dtcc/` inteira a cada execução (não só o arquivo novo). Se dois CSVs
@@ -168,10 +182,11 @@ abaixo.
 
 ### Observabilidade, etapa 2: checagem de qualidade do CSV
 
-`lambda/quality_check.py`, disparada pelo **mesmo evento do S3** que
-dispara a `trigger_bronze` (csv em `raw/dtcc/`), como alvo independente
-dentro da mesma notificação -- roda em paralelo, **não bloqueia o Glue**.
-Checagens, as três mais simples que cobrem o essencial:
+`lambda/quality_check.py`, disparada pela **mesma regra do EventBridge**
+que dispara a `trigger_bronze` (csv em `raw/dtcc/`, ver explicação do
+mecanismo na seção anterior), como alvo independente da mesma regra --
+roda em paralelo, **não bloqueia o Glue**. Checagens, as três mais
+simples que cobrem o essencial:
 
 1. **Schema**: as colunas-chave usadas pela Bronze/Silver estão
    presentes (`Dissemination Identifier`, `Original Dissemination

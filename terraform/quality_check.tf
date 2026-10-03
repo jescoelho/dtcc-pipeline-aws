@@ -58,12 +58,22 @@ resource "aws_lambda_function" "quality_check" {
   }
 }
 
-resource "aws_lambda_permission" "allow_s3_quality_check" {
-  statement_id  = "AllowS3InvokeQualityCheck"
+# Alvo independente da MESMA regra do EventBridge que dispara a
+# trigger_bronze (ver lambda.tf, aws_cloudwatch_event_rule.csv_arrived) --
+# o S3 não aceita duas Lambdas no mesmo prefixo/sufixo direto nele, daí o
+# evento passar pelo EventBridge, que sim permite múltiplos alvos.
+resource "aws_cloudwatch_event_target" "csv_arrived_to_quality_check" {
+  rule      = aws_cloudwatch_event_rule.csv_arrived.name
+  target_id = "quality-check"
+  arn       = aws_lambda_function.quality_check.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_quality_check" {
+  statement_id  = "AllowEventBridgeInvokeQualityCheck"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.quality_check.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.lake.arn
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.csv_arrived.arn
 }
 
 output "lambda_quality_check" {

@@ -118,22 +118,21 @@ resource "aws_lambda_function" "trigger_bronze" {
   }
 }
 
-resource "aws_lambda_permission" "allow_s3_trigger_bronze" {
-  statement_id  = "AllowS3InvokeTriggerBronze"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.trigger_bronze.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.lake.arn
-}
-
-# Uma única configuração de notificação para o bucket -- o S3 não aceita
-# mais de um aws_s3_bucket_notification por bucket, então os três gatilhos
-# (descompactar, disparar o Glue, checar qualidade) vivem juntos aqui,
-# cada um com seu prefixo/sufixo. trigger_bronze e quality_check reagem
-# ao MESMO evento (csv em raw/dtcc/) como alvos independentes -- o S3
-# invoca as duas, uma não espera a outra.
+# ---------- Notificação do bucket ----------
+# O .zip tem um único consumidor (unzip_dtcc) -- isso o S3 resolve direto,
+# sem ambiguidade, então continua registrado aqui mesmo.
+#
+# O .csv em raw/dtcc/ tem DOIS consumidores independentes (trigger_bronze
+# e quality_check). O S3 não aceita duas regras com o mesmo prefixo+sufixo
+# apontando para Lambdas diferentes ("Configuration is ambiguously
+# defined") -- ele não tem como saber que as duas devem disparar. Por
+# isso o .csv usa um caminho diferente: `eventbridge = true` manda todo
+# evento do bucket também para o EventBridge, e lá sim uma regra pode ter
+# vários alvos. É o padrão certo para "um evento, N consumidores" -- o
+# mesmo mecanismo que a etapa futura de Step Functions usaria.
 resource "aws_s3_bucket_notification" "unzip_on_upload" {
-  bucket = aws_s3_bucket.lake.id
+  bucket      = aws_s3_bucket.lake.id
+  eventbridge = true
 
   lambda_function {
     lambda_function_arn = aws_lambda_function.unzip_dtcc.arn
@@ -142,25 +141,40 @@ resource "aws_s3_bucket_notification" "unzip_on_upload" {
     filter_suffix       = ".zip"
   }
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.trigger_bronze.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "raw/dtcc/"
-    filter_suffix       = ".csv"
-  }
+  depends_on = [aws_lambda_permission.allow_s3]
+}
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.quality_check.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "raw/dtcc/"
-    filter_suffix       = ".csv"
-  }
+resource "aws_cloudwatch_event_rule" "csv_arrived" {
+  name        = "${var.prefix}-csv-arrived"
+  description = "CSV chegou em raw/dtcc/ -- dispara o Glue Bronze e a checagem de qualidade, em paralelo"
 
-  depends_on = [
-    aws_lambda_permission.allow_s3,
-    aws_lambda_permission.allow_s3_trigger_bronze,
-    aws_lambda_permission.allow_s3_quality_check,
-  ]
+  event_pattern = jsonencode({
+    source        = ["aws.s3"]
+    "detail-type" = ["Object Created"]
+    detail = {
+      bucket = { name = [aws_s3_bucket.lake.id] }
+      object = {
+        key = [
+          { prefix = "raw/dtcc/" },
+          { suffix = ".csv" },
+        ]
+      }
+    }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "csv_arrived_to_trigger_bronze" {
+  rule      = aws_cloudwatch_event_rule.csv_arrived.name
+  target_id = "trigger-bronze"
+  arn       = aws_lambda_function.trigger_bronze.arn
+}
+
+resource "aws_lambda_permission" "allow_eventbridge_trigger_bronze" {
+  statement_id  = "AllowEventBridgeInvokeTriggerBronze"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.trigger_bronze.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.csv_arrived.arn
 }
 
 output "lambda_unzip" {
