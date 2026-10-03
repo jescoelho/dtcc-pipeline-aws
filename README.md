@@ -84,6 +84,48 @@ do outro projeto, não são limites independentes do total de créditos.
 
 **Ao terminar: `terraform destroy`.**
 
+### Automatizando a ingestão (`scripts/ingerir_cumulative.sh`)
+
+**Escopo atual: só a cópia pro S3, nada além disso.** O script copia o
+`.zip` do Cumulative direto do bucket público do DTCC pro nosso bucket
+(`raw/dtcc_zip/`), usando uma cópia **servidor-a-servidor** (`aws s3 cp`
+entre dois `s3://`, via API `CopyObject`) -- o arquivo nunca passa pelo
+seu computador, nem em disco nem em memória. Confirmado manualmente em
+03/10/2026.
+
+```bash
+cd ~/dtcc-pipeline-aws
+./scripts/ingerir_cumulative.sh                      # hoje, RATES, cftc
+./scripts/ingerir_cumulative.sh 2026-10-02            # data específica
+./scripts/ingerir_cumulative.sh 2026-10-02 CREDITS    # outra classe de ativo
+```
+
+### Descompactando sem passar pela sua máquina (Lambda)
+
+Quando o `.zip` cai em `raw/dtcc_zip/`, uma Lambda (`lambda/unzip_dtcc.py`)
+é disparada automaticamente pelo próprio evento do S3 -- lê o zip pra
+memória, acha o `.csv` dentro, e grava ele em `raw/dtcc/`. Nada disso passa
+pelo seu computador nem por um Glue job; é só a Lambda, acordada pelo S3.
+
+Testado localmente (`tests/test_lambda_unzip.py`, com mocks de S3 e um zip
+real construído a partir do fixture) antes de ir para o Terraform. Para
+aplicar:
+```bash
+cd terraform
+terraform apply -var prefix=SEUNOME-dtcclab -var budget_email=seu@email
+./../scripts/ingerir_cumulative.sh 2026-10-02    # dispara o fluxo
+aws s3 ls s3://$(terraform output -raw bucket)/raw/dtcc/   # confere se o csv apareceu
+```
+
+**O que ainda NÃO está automatizado** (de propósito, passo a passo):
+disparar o job Glue Bronze depois que o CSV aparece em `raw/dtcc/`. Isso
+pode entrar na mesma Lambda (um `glue.start_job_run` no final) ou, melhor,
+como seu próprio evento/orquestração -- próximo degrau, não construído.
+
+**Depois, também pendente:** mover o `scripts/ingerir_cumulative.sh` (o
+download inicial) para dentro de uma Lambda com EventBridge Schedule,
+rodando sozinho todo dia, sem depender do computador estar ligado.
+
 ## Roteiro de evolução
 
 1. **Bronze local** (feito) — ingestão crua do CSV Cumulative, sem
