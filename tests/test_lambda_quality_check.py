@@ -6,6 +6,7 @@ Evento no formato "S3 Object Created" do EventBridge (não o {"Records":
 import csv
 import importlib
 import io
+import json
 import sys
 from pathlib import Path
 from unittest import mock
@@ -158,3 +159,43 @@ def test_cada_evento_e_checado_independentemente(monkeypatch):
 
     assert resposta_1["checado"]["csv"] == "s3://b/raw/dtcc/a.csv"
     assert resposta_2["checado"]["csv"] == "s3://b/raw/dtcc/b.csv"
+
+
+def test_registra_execucao_na_tabela_de_controle_mesmo_sem_problema(monkeypatch):
+    corpo = _csv_bytes(
+        [
+            {
+                "Dissemination Identifier": "1",
+                "Original Dissemination Identifier": "",
+                "Action type": "NEWT",
+                "Event timestamp": "2026-10-02T19:00:00",
+            }
+        ],
+        COLUNAS_OK,
+    )
+    fake_s3, fake_sns, client_fn = _mock_clients(corpo)
+    modulo = _carregar_modulo(monkeypatch, client_fn)
+
+    modulo.handler(_evento_eventbridge("meu-bucket", "raw/dtcc/a.csv"), context=None)
+
+    fake_s3.put_object.assert_called_once()
+    kwargs = fake_s3.put_object.call_args.kwargs
+    assert kwargs["Bucket"] == "meu-bucket"
+    assert kwargs["Key"].startswith("logs/execucoes/dt=")
+    registro = json.loads(kwargs["Body"])
+    assert registro["origem"] == "quality_check"
+    assert registro["status"] == "ok"
+    assert registro["linhas"] == 1
+
+
+def test_registro_na_tabela_de_controle_marca_status_problema(monkeypatch):
+    corpo = _csv_bytes([], COLUNAS_OK)
+    fake_s3, fake_sns, client_fn = _mock_clients(corpo)
+    modulo = _carregar_modulo(monkeypatch, client_fn)
+
+    modulo.handler(_evento_eventbridge("meu-bucket", "raw/dtcc/vazio.csv"), context=None)
+
+    kwargs = fake_s3.put_object.call_args.kwargs
+    registro = json.loads(kwargs["Body"])
+    assert registro["status"] == "problema"
+    assert registro["problemas"]

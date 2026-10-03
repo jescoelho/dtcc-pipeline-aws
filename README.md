@@ -216,6 +216,50 @@ Depois do import, o `plan` deve mostrar só `retention_in_days` mudando
 de `null` pra `14` em cada um -- `~ update in-place`, nada de
 criar/destruir.
 
+**Pegadinha real nessa etapa**: `terraform import` carrega a configuração
+inteira pra saber o schema do recurso, então precisa das mesmas
+`-var` que o `plan`/`apply` -- sem elas, fica esperando digitar o valor
+na hora. E como o argumento do import (`/aws/lambda/...`) começa com
+barra, o Git Bash no Windows tenta convertê-lo pra um caminho do
+Windows (mesmo mangling do `aws logs tail`, ver etapa de Job Bookmarks)
+-- resolve com `export MSYS_NO_PATHCONV=1` antes do import, `unset`
+depois.
+
+### Boas práticas, etapa 3: tabela de controle das execuções
+
+Pergunta que motivou esta etapa: entre reter log do CloudWatch e ter uma
+tabela de logs consultável, qual é preferível em engenharia de dados?
+Resposta curta: não são concorrentes, mas se só um existisse, a tabela
+ganha -- CloudWatch é bom pra depurar um erro específico (texto solto,
+não consultável com SQL), a tabela é o que vira tendência, dashboard e
+auditoria.
+
+`lambda/trigger_bronze.py` e `lambda/quality_check.py` agora gravam um
+registro JSON em `logs/execucoes/dt=AAAA-MM-DD/<uuid>.json` a cada
+execução -- `origem` (qual Lambda), `csv`, `status`, e os campos
+específicos de cada uma (`job_run_id` pra trigger_bronze; `linhas` e
+`problemas` pra quality_check). `athena/queries.sql` tem a
+`CREATE EXTERNAL TABLE controle_execucoes` (JSON SerDe, particionada por
+`dt`) e três queries de exemplo: volume processado por dia, taxa de
+problemas de qualidade por dia, e todo disparo do Glue com seu
+`job_run_id` (pra cruzar com `aws glue get-job-run` se precisar
+investigar).
+
+Isso é a base que faltava pra fechar a extensão futura da checagem de
+qualidade ("comparar o volume do dia com o histórico, não só o arquivo
+isolado") -- agora o histórico existe e é consultável, só falta
+escrever a query/alerta que compara.
+
+Testado com S3 mockado (`tests/test_lambda_trigger_bronze.py`,
+`tests/test_lambda_quality_check.py`): confirma que o registro é
+gravado com `Bucket`/`Key`/conteúdo corretos, inclusive o `status`
+batendo com "ok" vs "problema".
+
+**Limite assumido nesta etapa**: assim como a tabela `dtcc_bronze`, o
+`MSCK REPAIR TABLE controle_execucoes` precisa rodar de novo pra
+enxergar partições (`dt=`) novas -- manual por enquanto, mesma lacuna
+de sempre.
+
 **Fora do escopo desta etapa**: os log groups do Glue (`/aws-glue/jobs/...`)
 são compartilhados por toda a conta, não um por job -- ajustar a
 retenção deles afetaria qualquer outro laboratório que usar Glue nesta

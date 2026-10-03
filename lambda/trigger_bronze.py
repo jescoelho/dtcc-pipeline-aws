@@ -22,13 +22,23 @@ Responsabilidade única -- só isso. Não descompacta (isso é
 lambda/unzip_dtcc.py) e não faz checagem de qualidade (isso é
 lambda/quality_check.py, que roda em paralelo a partir da mesma regra).
 
+Além de disparar o Glue, grava um registro em logs/execucoes/ (tabela de
+controle consultável no Athena, ver athena/queries.sql) -- diferente do
+log do CloudWatch (texto solto, só serve pra depurar um erro específico),
+isso é dado estruturado: histórico de todo disparo, com job_run_id,
+consultável com SQL, barato de guardar por anos.
+
 Variável de ambiente esperada: GLUE_JOB_NAME.
 """
+import json
 import os
+import uuid
+from datetime import datetime, timezone
 
 import boto3
 
 glue = boto3.client("glue")
+s3 = boto3.client("s3")
 
 
 def handler(event, context):
@@ -37,10 +47,26 @@ def handler(event, context):
     key = event["detail"]["object"]["key"]
 
     response = glue.start_job_run(JobName=job_name)
+    job_run_id = response["JobRunId"]
+
+    _registrar_execucao(bucket, key, job_run_id)
 
     return {
         "disparado": {
             "csv": f"s3://{bucket}/{key}",
-            "job_run_id": response["JobRunId"],
+            "job_run_id": job_run_id,
         }
     }
+
+
+def _registrar_execucao(bucket: str, key: str, job_run_id: str) -> None:
+    agora = datetime.now(timezone.utc)
+    registro = {
+        "timestamp": agora.isoformat(),
+        "origem": "trigger_bronze",
+        "csv": f"s3://{bucket}/{key}",
+        "job_run_id": job_run_id,
+        "status": "disparado",
+    }
+    log_key = f"logs/execucoes/dt={agora.strftime('%Y-%m-%d')}/{uuid.uuid4()}.json"
+    s3.put_object(Bucket=bucket, Key=log_key, Body=json.dumps(registro).encode("utf-8"))

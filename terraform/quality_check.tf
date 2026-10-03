@@ -34,6 +34,13 @@ data "aws_iam_policy_document" "quality_check_lambda_permissions" {
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.alertas.arn]
   }
+  statement {
+    # Tabela de controle (logs/execucoes/, ver athena/queries.sql) -- um
+    # registro por checagem, consultável via SQL, diferente do log do
+    # CloudWatch.
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.lake.arn}/logs/execucoes/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "quality_check_lambda_permissions" {

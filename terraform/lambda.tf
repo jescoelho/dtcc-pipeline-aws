@@ -94,6 +94,13 @@ data "aws_iam_policy_document" "trigger_bronze_glue" {
     actions   = ["glue:StartJobRun"]
     resources = [aws_glue_job.bronze.arn]
   }
+  statement {
+    # Tabela de controle (logs/execucoes/, ver athena/queries.sql) -- um
+    # registro por disparo, consultável via SQL, diferente do log do
+    # CloudWatch.
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.lake.arn}/logs/execucoes/*"]
+  }
 }
 
 resource "aws_iam_role_policy" "trigger_bronze_glue" {

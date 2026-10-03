@@ -31,11 +31,22 @@ que já vimos quebrar no dado real):
      (NEWT/MODI/CORR/TERM/EROR/REVI) -- um valor novo pode ser o DTCC
      mudando o layout, o que já aconteceu uma vez neste projeto.
 
+Também grava um registro em logs/execucoes/ (tabela de controle
+consultável no Athena, ver athena/queries.sql) com a contagem de linhas
+e os problemas encontrados -- diferente do log do CloudWatch (texto
+solto, só serve pra depurar um erro específico), isso é dado
+estruturado: histórico de volume e qualidade por dia, consultável com
+SQL, base pra detectar queda gradual (tarefa futura já registrada no
+README).
+
 Variável de ambiente esperada: SNS_TOPIC_ARN.
 """
 import csv
 import io
+import json
 import os
+import uuid
+from datetime import datetime, timezone
 
 import boto3
 
@@ -55,7 +66,9 @@ LINHAS_MINIMAS = 1
 def handler(event, context):
     bucket = event["detail"]["bucket"]["name"]
     key = event["detail"]["object"]["key"]
-    return {"checado": _checar(bucket, key)}
+    resultado = _checar(bucket, key)
+    _registrar_execucao(bucket, resultado)
+    return {"checado": resultado}
 
 
 def _checar(bucket: str, key: str) -> dict:
@@ -94,3 +107,17 @@ def _checar(bucket: str, key: str) -> dict:
         )
 
     return resultado
+
+
+def _registrar_execucao(bucket: str, resultado: dict) -> None:
+    agora = datetime.now(timezone.utc)
+    registro = {
+        "timestamp": agora.isoformat(),
+        "origem": "quality_check",
+        "csv": resultado["csv"],
+        "linhas": resultado["linhas"],
+        "problemas": resultado["problemas"],
+        "status": "problema" if resultado["problemas"] else "ok",
+    }
+    log_key = f"logs/execucoes/dt={agora.strftime('%Y-%m-%d')}/{uuid.uuid4()}.json"
+    s3.put_object(Bucket=bucket, Key=log_key, Body=json.dumps(registro).encode("utf-8"))
