@@ -117,10 +117,36 @@ terraform apply -var prefix=SEUNOME-dtcclab -var budget_email=seu@email
 aws s3 ls s3://$(terraform output -raw bucket)/raw/dtcc/   # confere se o csv apareceu
 ```
 
-**O que ainda NÃO está automatizado** (de propósito, passo a passo):
-disparar o job Glue Bronze depois que o CSV aparece em `raw/dtcc/`. Isso
-pode entrar na mesma Lambda (um `glue.start_job_run` no final) ou, melhor,
-como seu próprio evento/orquestração -- próximo degrau, não construído.
+### Disparando o Glue Bronze automaticamente (Lambda separada, Opção 2)
+
+Decisão: usar uma Lambda **dedicada só a isso** (`lambda/trigger_bronze.py`),
+disparada por um segundo evento do S3 (CSV aparece em `raw/dtcc/`), em vez
+de a mesma Lambda que descompacta também chamar o Glue. Motivo:
+responsabilidade única -- a Lambda de descompactar já está testada
+isoladamente sem precisar mockar Glue; se o `start_job_run` falhar, isso
+não deve derrubar a descompactação, que já funcionou; e dá pra encaixar
+outras reações ao mesmo evento (checagem de qualidade, notificação) sem
+tocar na Lambda de descompactar.
+
+Cadeia completa agora: `.zip` cai em `raw/dtcc_zip/` → Lambda descompacta
+→ `.csv` aparece em `raw/dtcc/` → segunda Lambda dispara o Glue Bronze.
+
+**Aviso honesto sobre concorrência:** o job Glue Bronze lê a pasta
+`raw/dtcc/` inteira a cada execução (não só o arquivo novo). Se dois CSVs
+chegarem muito próximos um do outro, dois disparos do job podem rodar
+concorrentemente sobre os mesmos dados -- não corrompe nada (cada
+partição é sobrescrita de forma idêntica), mas é redundante. Resolver
+isso de verdade é o que a etapa de Step Functions (roteiro, item 2)
+cobre, com idempotência e controle de execução única por vez.
+
+## Tarefas futuras (ainda não construídas)
+
+- **Checagem de qualidade de dados assim que o CSV aparecer**, antes do
+  Glue rodar (volume, schema, `Action type` dentro do esperado) -- reagindo
+  ao mesmo evento do S3 que dispara a Lambda de trigger do Glue, sem
+  acoplar as duas coisas na mesma função.
+- **Notificar alguém** (e-mail, Slack) quando o pipeline falhar ou quando
+  um arquivo novo for processado com sucesso.
 
 **Depois, também pendente:** mover o `scripts/ingerir_cumulative.sh` (o
 download inicial) para dentro de uma Lambda com EventBridge Schedule,
