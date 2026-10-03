@@ -452,6 +452,29 @@ fallback -- diferente do caso "metadado ausente", que já é tratado.
 Não aconteceu até agora; fica registrado como risco conhecido, não
 como bug.
 
+### Bug real encontrado: quality_check ficava sem memória no arquivo real
+
+Ao testar o fluxo end-to-end contra uma ingestão de verdade, o
+`quality_check` esgotou os 128 MB de memória da Lambda nas 3 tentativas
+(`Runtime.OutOfMemory`, visível no `aws logs tail`) e a execução foi pra
+DLQ. Causa: o código carrega o CSV inteiro na memória
+(`obj["Body"].read().decode(...)`) antes de processar, e o relatório
+"Cumulative" do DTCC cresce com o tempo (acumula posições abertas) --
+128 MB, calibrado contra arquivos de teste pequenos, não é suficiente
+pro arquivo real atual.
+
+Correção aplicada: `terraform/quality_check.tf` subiu a memória da
+Lambda pra 1024 MB e o timeout de 30 pra 60s (CPU no Lambda escala com a
+memória, então o processamento também fica mais rápido, não só com mais
+espaço).
+
+**Limite que continua existindo**: a correção é calibrar um número
+maior, não eliminar o problema de raiz -- é `O(tamanho do arquivo)` de
+memória. Se o Cumulative continuar crescendo, isso estoura de novo em
+algum momento. Correção definitiva seria processar o CSV em streaming
+(iterar linha a linha a partir do `Body`, sem nunca ter o arquivo
+inteiro na memória), não construída agora.
+
 ## Tarefas futuras (ainda não construídas)
 
 - **Agendar a ingestão**: mover `scripts/ingerir_cumulative.sh` (o

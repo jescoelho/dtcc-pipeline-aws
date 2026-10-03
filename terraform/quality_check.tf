@@ -53,8 +53,20 @@ resource "aws_lambda_function" "quality_check" {
   role              = aws_iam_role.quality_check_lambda.arn
   handler           = "quality_check.handler"
   runtime           = "python3.12"
-  timeout           = 30
-  memory_size       = 128
+  # 128 MB estourava com Runtime.OutOfMemory no arquivo real (achado em
+  # produção, 2026-10-03): o código carrega o CSV inteiro na memória
+  # (_checar le o Body todo e decodifica pra string), e o relatório
+  # "Cumulative" do DTCC cresce com o tempo -- acumula posições abertas,
+  # não é um tamanho fixo. 1024 MB dá margem; timeout subiu de 30 pra 60s
+  # porque ler/decodificar um arquivo maior também leva mais tempo (CPU
+  # no Lambda escala com a memória, então não é proporcionalmente mais
+  # lento). Limite real: ainda é O(tamanho do arquivo) de memória -- se o
+  # Cumulative continuar crescendo, isso volta a estourar em algum
+  # momento. Correção definitiva seria processar em streaming
+  # (iter_lines no Body, sem carregar tudo de uma vez), não construída
+  # agora.
+  timeout           = 60
+  memory_size       = 1024
   filename          = data.archive_file.quality_check_lambda.output_path
   source_code_hash  = data.archive_file.quality_check_lambda.output_base64sha256
 
