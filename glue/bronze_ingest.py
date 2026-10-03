@@ -69,6 +69,7 @@ from urllib.parse import urlparse
 import boto3
 from awsglue.context import GlueContext
 from awsglue.job import Job
+from awsglue.transforms import SelectFromCollection
 from awsglue.utils import getResolvedOptions
 from awsgluedq.transforms import EvaluateDataQuality
 from pyspark.context import SparkContext
@@ -122,7 +123,7 @@ Rules = [
 ]
 """
 
-dq_resultado = EvaluateDataQuality().process_rows(
+dq_colecao = EvaluateDataQuality().process_rows(
     frame=dyf,
     ruleset=ruleset_dq,
     publishing_options={
@@ -131,6 +132,15 @@ dq_resultado = EvaluateDataQuality().process_rows(
         "enableDataQualityResultsPublishing": False,  # ver docstring: decisão de escopo
     },
     additional_options={"performanceTuning.caching": "CACHE_NOTHING"},
+)
+# process_rows devolve uma DynamicFrameCollection, não um DynamicFrame
+# direto -- erro real encontrado na primeira execução (AttributeError:
+# 'DynamicFrameCollection' object has no attribute 'toDF'). A chave
+# "ruleOutcomes" é o DynamicFrame com o veredicto de cada regra; é o que
+# o Glue Studio gera quando você monta isso visualmente, e é o único
+# jeito documentado de extrair de uma coleção.
+dq_resultado = SelectFromCollection.apply(
+    dfc=dq_colecao, key="ruleOutcomes", transformation_ctx="dq_rule_outcomes"
 )
 
 
