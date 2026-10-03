@@ -28,7 +28,7 @@ resource "aws_iam_role_policy_attachment" "quality_check_lambda_logs" {
 data "aws_iam_policy_document" "quality_check_lambda_permissions" {
   statement {
     actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.lake.arn}/raw/dtcc/*"]
+    resources = ["${aws_s3_bucket.lake.arn}/${local.fonte.raw_prefix}*"]
   }
   statement {
     actions   = ["sns:Publish"]
@@ -89,6 +89,11 @@ resource "aws_lambda_function" "quality_check" {
   environment {
     variables = {
       SNS_TOPIC_ARN = aws_sns_topic.alertas.arn
+      # Comparação de volume contra o histórico (ver _media_historica em
+      # lambda/quality_check.py) -- vem do contrato de fonte
+      # (config/fontes/dtcc.yaml), não cravado no código Python.
+      DIAS_HISTORICO        = tostring(local.fonte.dias_historico)
+      QUEDA_MAXIMA_TOLERADA = tostring(local.fonte.queda_maxima_tolerada)
     }
   }
 }

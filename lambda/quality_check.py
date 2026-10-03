@@ -47,7 +47,12 @@ consultável no Athena, ver athena/queries.sql) com a contagem de linhas
 erro específico), isso é dado estruturado: histórico de volume por dia,
 consultável com SQL, e é a própria fonte que `_media_historica` lê.
 
-Variável de ambiente esperada: SNS_TOPIC_ARN.
+Variáveis de ambiente esperadas: SNS_TOPIC_ARN, DIAS_HISTORICO e
+QUEDA_MAXIMA_TOLERADA -- as duas últimas vêm do contrato de fonte
+(config/fontes/dtcc.yaml, ver terraform/quality_check.tf), não são mais
+constantes cravadas aqui. Default local (7 dias, 50%) só pra não quebrar
+se a env var faltar (ex.: rodando fora do Lambda) -- em produção sempre
+vêm do Terraform.
 """
 import csv
 import io
@@ -63,10 +68,10 @@ sns = boto3.client("sns")
 
 # Quantos dias de histórico olhar pra calcular a média de volume, e o
 # quanto abaixo dela já conta como problema (0.5 = alerta se cair mais
-# de 50% da média). Números redondos, de propósito -- calibrar com dado
-# real é tarefa futura, não um valor definitivo.
-DIAS_HISTORICO = 7
-QUEDA_MAXIMA_TOLERADA = 0.5
+# de 50% da média). Vêm do contrato de fonte; os defaults abaixo só
+# cobrem execução fora do Lambda (ex.: teste local sem monkeypatch).
+DIAS_HISTORICO = int(os.environ.get("DIAS_HISTORICO", "7"))
+QUEDA_MAXIMA_TOLERADA = float(os.environ.get("QUEDA_MAXIMA_TOLERADA", "0.5"))
 
 
 def handler(event, context):

@@ -38,6 +38,18 @@ variable "budget_usd" {
 
 data "aws_caller_identity" "me" {}
 
+# ---------- Contrato de fonte ----------
+# Única fonte de verdade sobre o que é específico da fonte DTCC (ver
+# config/fontes/dtcc.yaml) -- caminhos S3 e regras de qualidade, lidos
+# aqui e distribuídos pros recursos que já os consumiam antes como
+# string cravada (Glue job, Lambdas, filtros do S3/EventBridge). Hoje só
+# existe uma fonte, então "fonte" ainda não é uma variável de módulo --
+# trocar de arquivo (ou adicionar uma segunda) é a próxima etapa da
+# generalização.
+locals {
+  fonte = yamldecode(file("${path.module}/../config/fontes/dtcc.yaml"))
+}
+
 locals {
   bucket = "${var.prefix}-${data.aws_caller_identity.me.account_id}"
 }
@@ -141,13 +153,24 @@ resource "aws_glue_job" "bronze" {
   }
 
   default_arguments = {
-    "--raw_path"            = "s3://${aws_s3_bucket.lake.id}/raw/dtcc/"
-    "--bronze_path"         = "s3://${aws_s3_bucket.lake.id}/bronze/dtcc/"
+    "--raw_path"            = "s3://${aws_s3_bucket.lake.id}/${local.fonte.raw_prefix}"
+    "--bronze_path"         = "s3://${aws_s3_bucket.lake.id}/${local.fonte.bronze_prefix}"
     "--enable-metrics"      = "true"
     # Processa só os arquivos novos desde a última execução com sucesso,
     # em vez de reler raw/dtcc/ inteira a cada run -- ver glue/bronze_ingest.py
     # para a explicação completa.
     "--job-bookmark-option" = "job-bookmark-enable"
+
+    # Campos do contrato de fonte (config/fontes/dtcc.yaml) que o job usa
+    # pra montar o ruleset DQDL em runtime (ver _montar_ruleset em
+    # glue/bronze_ingest.py), em vez de ter a string inteira cravada no
+    # script -- listas viram string separada por vírgula porque
+    # default_arguments do Glue só aceita string.
+    "--colunas_obrigatorias" = join(",", local.fonte.colunas_obrigatorias)
+    "--coluna_id"            = local.fonte.coluna_id
+    "--unicidade_minima"     = tostring(local.fonte.unicidade_minima)
+    "--coluna_dominio"       = local.fonte.coluna_dominio
+    "--valores_dominio"      = join(",", local.fonte.valores_dominio)
   }
 }
 

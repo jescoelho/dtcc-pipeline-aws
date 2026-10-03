@@ -587,6 +587,40 @@ continuam fora do escopo do Glue Data Quality -- são sobre o
 *pipeline*, não sobre o *dado isolado*, e continuam sendo papel da
 tabela de controle (`logs/execucoes/`).
 
+### Contrato de fonte -- passo 1 da generalização (03/10/2026)
+
+`config/fontes/dtcc.yaml` é agora a única fonte de verdade pro que é
+específico da fonte DTCC: caminhos S3 (`raw_prefix`, `zip_prefix`,
+`bronze_prefix`), schema/identidade/domínio pro ruleset DQDL
+(`colunas_obrigatorias`, `coluna_id`, `unicidade_minima`,
+`coluna_dominio`, `valores_dominio`) e os parâmetros do volume
+histórico (`dias_historico`, `queda_maxima_tolerada`). Antes, cada um
+desses valores estava cravado em dois ou três lugares ao mesmo tempo
+(Python e Terraform) -- mudar um significava achar todas as cópias.
+
+**Como funciona**: só o Terraform lê o YAML (`yamldecode(file(...))`
+em `terraform/main.tf`, como `local.fonte`) e distribui cada campo pro
+recurso que já o consumia -- argumentos do Glue job, variáveis de
+ambiente das Lambdas (`RAW_PREFIX`, `DIAS_HISTORICO`,
+`QUEDA_MAXIMA_TOLERADA`), filtro do S3 notification, prefixo da regra
+do EventBridge, recursos do IAM. O Python não ganhou um parser de YAML
+-- continua lendo env var/job argument, exatamente como já lia
+`raw_path`/`bronze_path`/`execution_id` antes. `glue/bronze_ingest.py`
+monta o ruleset DQDL em runtime a partir dos argumentos
+(`_montar_ruleset`), em vez de ter a string cravada.
+
+**Limite que persiste (de propósito)**: isto generaliza o *dado de
+configuração*, não ainda a *infraestrutura*. Os recursos do Terraform
+continuam declarados um a um pra uma única fonte -- não é um módulo
+reutilizável. Adicionar uma segunda fonte hoje significa duplicar os
+recursos (Lambdas, IAM, Glue job, regras do EventBridge) com um
+`config/fontes/<nome>.yaml` novo, não só adicionar um arquivo de
+config. Virar módulo só vale a pena com uma segunda fonte real na mão,
+pra não generalizar em cima de uma suposição. `scripts/ingerir_cumulative.sh`
+(download inicial) e a leitura do CSV pelo Glue (header com as 110
+colunas reais do Cumulative) também ficaram fora -- são específicos
+demais do DTCC pra abstrair sem um segundo caso real.
+
 ## Tarefas futuras (ainda não construídas)
 
 - **Agendar a ingestão**: mover `scripts/ingerir_cumulative.sh` (o
@@ -598,10 +632,10 @@ tabela de controle (`logs/execucoes/`).
   redundante -- ver aviso na seção da `trigger_bronze`). Step Functions
   resolve isso com execução única por vez, e também orquestraria
   Bronze → Silver → Gold em sequência.
-- **Generalizar pra outras fontes**: extrair o layout S3 (`raw/dtcc/`),
-  as regras de qualidade e o ruleset DQDL pra um config por fonte, em
-  vez de strings cravadas no código -- ver análise de parametrização
-  discutida nesta sessão.
+- **Generalizar pra outras fontes (passos 2 e 3)**: transformar os
+  recursos do Terraform num módulo reutilizável, instanciado uma vez
+  por fonte a partir do seu `config/fontes/<nome>.yaml` -- hoje só o
+  passo 1 (o contrato de configuração) está feito, ver seção acima.
 - **Atualidade, consistência sazonal, linhagem de dado**: as três
   dimensões de qualidade que o Glue Data Quality não cobre (ver seção
   acima) -- pedem um runner agendado, não reativo a evento.

@@ -35,11 +35,11 @@ resource "aws_iam_role_policy_attachment" "unzip_lambda_logs" {
 data "aws_iam_policy_document" "unzip_lambda_s3" {
   statement {
     actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.lake.arn}/raw/dtcc_zip/*"]
+    resources = ["${aws_s3_bucket.lake.arn}/${local.fonte.zip_prefix}*"]
   }
   statement {
     actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.lake.arn}/raw/dtcc/*"]
+    resources = ["${aws_s3_bucket.lake.arn}/${local.fonte.raw_prefix}*"]
   }
   statement {
     # Tabela de controle (logs/execucoes/, ver athena/queries.sql) -- o
@@ -63,6 +63,14 @@ resource "aws_lambda_function" "unzip_dtcc" {
   memory_size      = 256
   filename         = data.archive_file.unzip_lambda.output_path
   source_code_hash = data.archive_file.unzip_lambda.output_base64sha256
+
+  environment {
+    variables = {
+      # Pra onde escrever o .csv descompactado -- vem do contrato de
+      # fonte (config/fontes/dtcc.yaml), não cravado no código Python.
+      RAW_PREFIX = local.fonte.raw_prefix
+    }
+  }
 }
 
 resource "aws_lambda_permission" "allow_s3" {
@@ -105,7 +113,7 @@ data "aws_iam_policy_document" "trigger_bronze_glue" {
     # gravado pelo unzip_dtcc.py (ver trigger_bronze.py) -- não lê o
     # corpo do arquivo, só o cabeçalho.
     actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.lake.arn}/raw/dtcc/*"]
+    resources = ["${aws_s3_bucket.lake.arn}/${local.fonte.raw_prefix}*"]
   }
   statement {
     # Tabela de controle (logs/execucoes/, ver athena/queries.sql) -- um
@@ -157,7 +165,7 @@ resource "aws_s3_bucket_notification" "unzip_on_upload" {
   lambda_function {
     lambda_function_arn = aws_lambda_function.unzip_dtcc.arn
     events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "raw/dtcc_zip/"
+    filter_prefix       = local.fonte.zip_prefix
     filter_suffix       = ".zip"
   }
 
@@ -185,7 +193,7 @@ resource "aws_cloudwatch_event_rule" "csv_arrived" {
       bucket = { name = [aws_s3_bucket.lake.id] }
       object = {
         key = [
-          { prefix = "raw/dtcc/" },
+          { prefix = local.fonte.raw_prefix },
         ]
       }
     }

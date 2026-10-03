@@ -24,9 +24,18 @@ descompactação do .zip não deixava rastro nenhum fora do CloudWatch
 
 Escopo desta etapa: só descompactar. Disparar o job Glue Bronze é
 responsabilidade de lambda/trigger_bronze.py.
+
+O prefixo de destino (`raw/dtcc/`) vem da variável de ambiente
+RAW_PREFIX (ver terraform/lambda.tf), que por sua vez vem do contrato de
+fonte (config/fontes/dtcc.yaml) -- não é mais uma string cravada aqui,
+pra esta Lambda poder servir qualquer fonte que descompacte um .zip com
+um .csv dentro, não só o DTCC especificamente.
+
+Variável de ambiente esperada: RAW_PREFIX.
 """
 import io
 import json
+import os
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -60,7 +69,7 @@ def _processar(bucket: str, key: str) -> dict:
             csv_bytes = csv_file.read()
 
     execution_id = str(uuid.uuid4())
-    destino_key = f"raw/dtcc/{csv_name.split('/')[-1]}"
+    destino_key = f"{os.environ['RAW_PREFIX']}{csv_name.split('/')[-1]}"
     s3.put_object(
         Bucket=bucket,
         Key=destino_key,

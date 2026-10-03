@@ -1,0 +1,54 @@
+# Contrato da fonte DTCC PPD (relatório Cumulative, classe Rates).
+#
+# Fonte única de verdade pro que hoje identifica ESTA fonte, em vez de
+# estar cravado em Python (lambda/unzip_dtcc.py, lambda/quality_check.py,
+# glue/bronze_ingest.py) e em Terraform (main.tf, lambda.tf) ao mesmo
+# tempo. Passo 1 da generalização: o Terraform lê este arquivo
+# (yamldecode) e distribui cada campo pra onde ele já era consumido --
+# caminhos S3 pros argumentos do Glue job, pras variáveis de ambiente das
+# Lambdas e pros filtros do S3/EventBridge; campos de regra de qualidade
+# pra novos argumentos do Glue job, que monta o ruleset DQDL em runtime
+# (ver _montar_ruleset em glue/bronze_ingest.py) em vez de ter a string
+# inteira cravada no script.
+#
+# Adicionar uma fonte nova hoje significa: um arquivo como este +
+# duplicar os recursos do Terraform (ainda não é um módulo reutilizável
+# -- isso é o passo 2, só vale a pena depois de existir uma segunda fonte
+# de verdade pra validar contra). Script de ingestão (scripts/ingerir_cumulative.sh)
+# e o próprio parsing do CSV (que depende da estrutura real de 110
+# colunas do Cumulative) continuam fora deste contrato -- são específicos
+# demais do DTCC pra generalizar sem uma segunda fonte real na mão.
+
+nome: dtcc
+
+# Layout no bucket -- onde o .zip chega, onde o unzip_dtcc.py escreve o
+# .csv, onde o Glue escreve a Bronze em Parquet.
+zip_prefix: raw/dtcc_zip/
+raw_prefix: raw/dtcc/
+bronze_prefix: bronze/dtcc/
+
+# Regras de qualidade que o AWS Glue Data Quality avalia (ver
+# glue/bronze_ingest.py) -- schema (colunas obrigatórias), identidade
+# (completude + unicidade da coluna que identifica univocamente uma
+# transação) e domínio (valores aceitos numa coluna categórica).
+colunas_obrigatorias:
+  - "Dissemination Identifier"
+  - "Original Dissemination Identifier"
+  - "Action type"
+  - "Event timestamp"
+coluna_id: "Dissemination Identifier"
+unicidade_minima: 0.99
+coluna_dominio: "Action type"
+valores_dominio:
+  - NEWT
+  - MODI
+  - CORR
+  - TERM
+  - EROR
+  - REVI
+
+# Comparação de volume contra o histórico (ver _media_historica em
+# lambda/quality_check.py) -- o Glue Data Quality não cobre isso, só vê o
+# arquivo de hoje isolado.
+dias_historico: 7
+queda_maxima_tolerada: 0.5

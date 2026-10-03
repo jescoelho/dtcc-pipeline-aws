@@ -54,14 +54,30 @@ de todas as regras, pra poder filtrar/agrupar por regra direto em SQL.
 Diferente das Lambdas (testadas com pytest e mocks), não há como rodar
 Spark/Glue Data Quality localmente -- a execução real na AWS é o teste.
 
+**Contrato de fonte** (config/fontes/dtcc.yaml, ver terraform/main.tf):
+os campos que definem schema/identidade/domínio pro ruleset DQDL
+(colunas_obrigatorias, coluna_id, unicidade_minima, coluna_dominio,
+valores_dominio) chegam como job argument, montados em `ruleset_dq` por
+`_montar_ruleset` -- não é mais uma string DQDL cravada neste script.
+Isso NÃO torna este job genérico por si só (ainda tem "DTCC" no nome,
+lê CSV com header fixo, escreve Parquet particionado por
+arquivo_origem); é o primeiro passo de uma generalização maior, que
+também exigiria extrair isso pra um módulo Terraform reutilizável por
+fonte -- ainda não feito, só vale a pena com uma segunda fonte real.
+
 Argumentos:
-  --raw_path       s3://bucket/raw/dtcc/   (pasta, não um arquivo específico)
-  --bronze_path    s3://bucket/bronze/dtcc/
-  --execution_id   opcional -- propagado pelo trigger_bronze.py (ver
-                    lambda/trigger_bronze.py) pra correlacionar este
-                    registro com o resto do fluxo end-to-end. Ausente em
-                    execuções manuais (ex.: reprocessamento direto no
-                    console), e tá tudo bem nesse caso.
+  --raw_path              s3://bucket/raw/dtcc/   (pasta, não um arquivo específico)
+  --bronze_path           s3://bucket/bronze/dtcc/
+  --colunas_obrigatorias  lista separada por vírgula (ColumnExists de cada uma)
+  --coluna_id             coluna de identidade (IsComplete + Uniqueness)
+  --unicidade_minima      limiar de Uniqueness, ex. "0.99"
+  --coluna_dominio        coluna categórica de domínio fechado (ColumnValues)
+  --valores_dominio       lista separada por vírgula dos valores aceitos
+  --execution_id          opcional -- propagado pelo trigger_bronze.py (ver
+                          lambda/trigger_bronze.py) pra correlacionar este
+                          registro com o resto do fluxo end-to-end. Ausente em
+                          execuções manuais (ex.: reprocessamento direto no
+                          console), e tá tudo bem nesse caso.
 """
 import json
 import sys
@@ -79,7 +95,23 @@ from pyspark.context import SparkContext
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
 
-args = getResolvedOptions(sys.argv, ["JOB_NAME", "raw_path", "bronze_path"])
+args = getResolvedOptions(
+    sys.argv,
+    [
+        "JOB_NAME",
+        "raw_path",
+        "bronze_path",
+        # Campos do contrato de fonte (config/fontes/dtcc.yaml, ver
+        # terraform/main.tf) que o ruleset DQDL precisa -- chegam como
+        # job argument, não mais cravados neste script, pra esta mesma
+        # ingestão poder servir outra fonte que só troque esses valores.
+        "colunas_obrigatorias",
+        "coluna_id",
+        "unicidade_minima",
+        "coluna_dominio",
+        "valores_dominio",
+    ],
+)
 sc = SparkContext()
 glue = GlueContext(sc)
 spark = glue.spark_session
@@ -109,23 +141,36 @@ dyf = glue.create_dynamic_frame.from_options(
 )
 
 # ---------- Glue Data Quality ----------
-# Cobre schema, domínio de Action type e unicidade -- as checagens que
-# existiam em Python puro no quality_check.py antes da aposentadoria
-# (ver docstring acima e docstring de lambda/quality_check.py).
-# Limiares (0.99 de unicidade) são números redondos de partida, não
-# calibrados.
-ruleset_dq = """
+# Cobre schema, domínio e unicidade -- as checagens que existiam em
+# Python puro no quality_check.py antes da aposentadoria (ver docstring
+# acima e docstring de lambda/quality_check.py). Limiares (0.99 de
+# unicidade) são números redondos de partida, não calibrados.
+def _montar_ruleset(colunas_obrigatorias, coluna_id, unicidade_minima, coluna_dominio, valores_dominio) -> str:
+    """Monta a string DQDL a partir do contrato de fonte, em vez de ter
+    o ruleset inteiro cravado neste script -- mesma estrutura de regras
+    (schema + identidade + domínio) serve qualquer fonte que tenha uma
+    coluna de identidade única e uma coluna categórica de domínio
+    fechado; só os nomes de coluna e os valores aceitos mudam."""
+    regras_schema = "\n    ".join(f'ColumnExists "{c}",' for c in colunas_obrigatorias)
+    valores = ", ".join(f'"{v}"' for v in valores_dominio)
+    return f"""
 Rules = [
-    ColumnExists "Dissemination Identifier",
-    ColumnExists "Original Dissemination Identifier",
-    ColumnExists "Action type",
-    ColumnExists "Event timestamp",
-    IsComplete "Dissemination Identifier",
+    {regras_schema}
+    IsComplete "{coluna_id}",
     RowCount > 0,
-    ColumnValues "Action type" in ["NEWT", "MODI", "CORR", "TERM", "EROR", "REVI"],
-    Uniqueness "Dissemination Identifier" > 0.99
+    ColumnValues "{coluna_dominio}" in [{valores}],
+    Uniqueness "{coluna_id}" > {unicidade_minima}
 ]
 """
+
+
+ruleset_dq = _montar_ruleset(
+    colunas_obrigatorias=args["colunas_obrigatorias"].split(","),
+    coluna_id=args["coluna_id"],
+    unicidade_minima=args["unicidade_minima"],
+    coluna_dominio=args["coluna_dominio"],
+    valores_dominio=args["valores_dominio"].split(","),
+)
 
 dq_colecao = EvaluateDataQuality().process_rows(
     frame=dyf,

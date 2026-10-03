@@ -37,7 +37,8 @@ def _s3_falso(conteudo_zip: bytes):
     return fake, store, put_calls
 
 
-def test_descompacta_e_grava_csv_identico_ao_original():
+def test_descompacta_e_grava_csv_identico_ao_original(monkeypatch):
+    monkeypatch.setenv("RAW_PREFIX", "raw/dtcc/")
     with mock.patch("boto3.client") as mock_client:
         fake_s3, store, put_calls = _s3_falso(_zip_do_fixture())
         mock_client.return_value = fake_s3
@@ -54,7 +55,8 @@ def test_descompacta_e_grava_csv_identico_ao_original():
         assert csv_gravado == csv_original
 
 
-def test_execution_id_vai_no_metadado_do_csv_e_no_registro_de_controle():
+def test_execution_id_vai_no_metadado_do_csv_e_no_registro_de_controle(monkeypatch):
+    monkeypatch.setenv("RAW_PREFIX", "raw/dtcc/")
     with mock.patch("boto3.client") as mock_client:
         fake_s3, store, put_calls = _s3_falso(_zip_do_fixture())
         mock_client.return_value = fake_s3
@@ -77,7 +79,8 @@ def test_execution_id_vai_no_metadado_do_csv_e_no_registro_de_controle():
         assert registro["csv"] == "s3://bucket-teste/raw/dtcc/dtcc_cumulative_sample.csv"
 
 
-def test_handler_processa_todos_os_records_do_evento():
+def test_handler_processa_todos_os_records_do_evento(monkeypatch):
+    monkeypatch.setenv("RAW_PREFIX", "raw/dtcc/")
     with mock.patch("boto3.client") as mock_client:
         fake_s3, store, put_calls = _s3_falso(_zip_do_fixture())
         mock_client.return_value = fake_s3
@@ -97,7 +100,8 @@ def test_handler_processa_todos_os_records_do_evento():
         assert resposta["processados"][0]["bytes"] == len(FIXTURE.read_bytes())
 
 
-def test_zip_sem_csv_ou_com_mais_de_um_levanta_erro():
+def test_zip_sem_csv_ou_com_mais_de_um_levanta_erro(monkeypatch):
+    monkeypatch.setenv("RAW_PREFIX", "raw/dtcc/")
     buf = BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("nao_eh_csv.txt", "qualquer coisa")
