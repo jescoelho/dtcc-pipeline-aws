@@ -758,12 +758,15 @@ CloudFormation/CDK, storage, segurança, observabilidade, well-architected
 review, entre outros -- além de um servidor MCP (`aws-mcp`) para consultar
 a documentação da AWS direto na conversa.
 
-O plugin não é um arquivo deste repositório: ele é habilitado por conta/
-sessão no Claude Code (catálogo de plugins), não por `git clone` ou
-dependência de projeto. Quem continuar este laboratório pode habilitá-lo
-na própria conta em `claude.ai` (ou no app) procurando por `aws-core`
-(publicador: `aws`); esta seção documenta a recomendação para quem abrir
-o repositório depois.
+O plugin em si não é um arquivo versionado -- ele é instalado por
+máquina/conta, não por `git clone`. Mas a *recomendação do projeto* está
+versionada em `.claude/settings.json` (`enabledPlugins:
+"aws-core@claude-plugins-official"`), que é o mecanismo nativo do Claude
+Code pra declarar "este projeto usa este plugin". Isso só habilita a
+intenção no projeto; o Claude Code CLI/desktop ainda pede, uma vez por
+máquina, `claude plugin install aws-core@claude-plugins-official` pra
+baixar o plugin de fato. Sessões cloud (claude.ai/code) não carregam
+plugins de projeto -- esta configuração vale só pro CLI/desktop local.
 
 - Repositório upstream do plugin: https://github.com/aws/agent-toolkit-for-aws
   (caminho `plugins/aws-core`)
