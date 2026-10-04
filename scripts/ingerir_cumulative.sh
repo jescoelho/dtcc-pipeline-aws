@@ -5,9 +5,19 @@
 # CopyObject, que roda inteiramente dentro da AWS (servidor-a-servidor),
 # em vez de baixar e depois subir pelo processo local.
 #
-# Por enquanto este script PARA AQUI -- sobe o .zip ainda compactado para
-# <zip_prefix> (contrato de fonte). Descompactar e disparar o job Glue
-# Bronze ainda não estão automatizados; são o próximo passo.
+# Desde 04/10/2026, a ingestão do dia a dia é automática --
+# lambda/ingerir_cumulative.py roda esta mesma cópia (CopyObject via
+# boto3) sozinha, numa agenda fixa do EventBridge (ver
+# terraform/ingestao_agendada.tf, contrato de fonte -> ingestao_cron).
+# Este script continua existindo para dois casos que a Lambda agendada
+# não cobre: um backfill manual (reprocessar uma data específica ou
+# classe de ativo diferente) e rodar antes de a Lambda existir numa
+# conta nova.
+#
+# Por enquanto este script PARA AQUI, igual à Lambda -- sobe o .zip
+# ainda compactado para <zip_prefix> (contrato de fonte). Descompactar e
+# disparar o job Glue Bronze continuam acontecendo pelo resto do fluxo
+# automático (Step Functions, ver docs/DECISOES.md).
 #
 # O padrão de URL (nome do bucket, caminho, nome do arquivo) NÃO é
 # documentado oficialmente pelo DTCC -- achado em repositórios de

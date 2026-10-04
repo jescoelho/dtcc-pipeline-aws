@@ -91,3 +91,19 @@ etapas_esperadas:
 # diferente (ex.: publica todo dia, ou num fuso/horário diferente) só
 # precisa trocar esta linha -- não é mais cravado no Terraform.
 checagem_cron: "cron(0 11 ? * MON-FRI *)"
+
+# Agenda da ingestão automatizada (ver lambda/ingerir_cumulative.py e
+# terraform/ingestao_agendada.tf) -- busca o Cumulative do dia direto do
+# bucket do DTCC, eliminando o passo manual que restava no pipeline
+# (scripts/ingerir_cumulative.sh, rodado à mão). Precisa terminar bem
+# antes de checagem_cron (acima), pra dar margem ao restante do fluxo
+# (descompactar -> Glue -> checagem de qualidade) rodar antes da
+# checagem de atualidade.
+#
+# Limite assumido: o horário real de publicação do Cumulative pelo DTCC
+# não é documentado oficialmente -- 6h UTC é um ponto de partida (~5h de
+# margem até checagem_cron), não um horário confirmado contra o
+# comportamento real do DTCC ao longo de várias semanas. Ajustar depois
+# de observar se o alerta de falha desta Lambda (arquivo ainda não
+# publicado no horário) dispara com frequência.
+ingestao_cron: "cron(0 6 ? * MON-FRI *)"

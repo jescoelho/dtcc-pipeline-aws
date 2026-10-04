@@ -676,3 +676,62 @@ assíncrono do Athena, o alerta de execução travada além da margem, o
 silêncio dentro da margem, e que a ausência de `STATE_MACHINE_ARN`
 pula a checagem sem quebrar (comportamento usado antes de a state
 machine existir ou em testes isolados).
+
+## Ingestão agendada -- elimina o último passo manual (04/10/2026)
+
+Retomando a "Tarefas futuras" registrada desde a criação da checagem de
+atualidade: a ingestão (`scripts/ingerir_cumulative.sh`) era o único
+passo do pipeline que ainda dependia de alguém rodar um comando à mão.
+Isso tinha dois efeitos: o pipeline não era de fato "fire and forget", e
+a checagem de atualidade (seção acima) ia alertar em todo dia útil em
+que ninguém lembrasse de rodar o script -- não um falso positivo, mas
+uma pressão real pra resolver isso.
+
+**O que mudou**: `lambda/ingerir_cumulative.py` reimplementa a mesma
+cópia servidor-a-servidor do script (API `CopyObject`, agora via boto3
+em vez de `aws s3 cp`) como Lambda, disparada por
+`aws_cloudwatch_event_rule.ingestao_agendada`
+(`terraform/ingestao_agendada.tf`) numa agenda fixa do EventBridge --
+mesmo padrão já usado pela checagem de atualidade/linhagem
+(`schedule_expression`, não reage a evento, porque não existe evento
+nativo para "está na hora de buscar o arquivo de hoje"). O script
+manual não foi removido -- continua útil pra backfill (data/classe de
+ativo específica) ou numa conta nova, antes do Terraform existir.
+
+**Parâmetros, todos do contrato de fonte** (`config/fontes/dtcc.yaml`,
+já existiam a maioria desde a extensão de generalização): `ORIGEM_BUCKET`,
+`ORIGEM_PADRAO`, `ZIP_PREFIX`, `CLASSE_ATIVO_DEFAULT`, `FONTE_DEFAULT`.
+Único campo novo no contrato: `ingestao_cron`.
+
+**Alerta na falha, não só no sucesso**: diferente do Glue (que emite
+"Job State Change" nativamente, permitindo uma regra separada do
+EventBridge), não existe evento nativo para "a cópia entre buckets
+falhou". Por isso o alerta é publicado direto do código da Lambda
+(`_alertar_falha`, mesmo padrão que `quality_check.py` já usa) antes de
+propagar a exceção -- o cenário mais provável de falha é o arquivo de
+hoje ainda não ter sido publicado pelo DTCC no horário agendado.
+
+**Observabilidade**: grava um registro na tabela de controle
+(`origem="ingerir_cumulative"`, `status="copiado"`) a cada cópia
+bem-sucedida -- não entra em `etapas_esperadas` (a checagem de
+linhagem continua olhando `unzip_dtcc` em diante, ver seção acima), é
+só mais um rastro consultável no Athena, simétrico ao que as outras
+Lambdas já fazem.
+
+**Limite assumido, sem solução definitiva ainda**: o horário do cron
+(`ingestao_cron: "cron(0 6 ? * MON-FRI *)"`, 6h UTC) é um ponto de
+partida, não um horário confirmado contra o comportamento real de
+publicação do DTCC -- não documentado oficialmente. Se a Lambda
+disparar antes do arquivo existir, ela falha e alerta (comportamento
+esperado, não um bug) -- mas alertar com frequência é o sinal de que o
+horário precisa subir. Ajustar observando a frequência real desse
+alerta ao longo de algumas semanas, não antes.
+
+Testado com S3 e SNS mockados
+(`tests/test_lambda_ingerir_cumulative.py`, 5 testes): nome de arquivo
+montado corretamente a partir do padrão do contrato (incluindo
+sobreposição de classe de ativo/fonte/data via o evento, útil para um
+invoke manual equivalente aos argumentos do script), uso da data de
+hoje (UTC) quando não especificada, registro na tabela de controle, e
+o alerta por SNS propagando a exceção original numa falha de cópia
+(sem registrar sucesso nesse caso).

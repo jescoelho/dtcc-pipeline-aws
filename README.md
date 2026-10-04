@@ -90,13 +90,20 @@ do outro projeto, não são limites independentes do total de créditos.
 
 **Ao terminar: `terraform destroy`.**
 
-### Ingestão do arquivo de origem (`scripts/ingerir_cumulative.sh`)
+### Ingestão do arquivo de origem
 
-**Escopo atual: só a cópia pro S3, nada além disso.** O script copia o
-`.zip` do Cumulative direto do bucket público do DTCC pro nosso bucket
-(`raw/dtcc_zip/`), usando uma cópia **servidor-a-servidor** (`aws s3 cp`
-entre dois `s3://`, via API `CopyObject`) — o arquivo nunca passa pelo
-seu computador, nem em disco nem em memória.
+**Automática desde 04/10/2026** — uma Lambda (`lambda/ingerir_cumulative.py`)
+roda a mesma cópia **servidor-a-servidor** (API `CopyObject`, o arquivo
+nunca passa pelo seu computador) sozinha, numa agenda fixa do
+EventBridge (dias úteis, horário em `config/fontes/dtcc.yaml` ->
+`ingestao_cron`). Não é mais um passo manual — depois do `terraform
+apply`, o pipeline inteiro roda sem intervenção, do download ao alerta
+de atualidade.
+
+`scripts/ingerir_cumulative.sh` continua existindo para dois casos que a
+Lambda agendada não cobre: um backfill manual (reprocessar uma data
+específica ou outra classe de ativo) e rodar antes de a Lambda existir
+numa conta nova:
 
 ```bash
 cd ~/dtcc-pipeline-aws
@@ -105,7 +112,8 @@ cd ~/dtcc-pipeline-aws
 ./scripts/ingerir_cumulative.sh 2026-10-02 CREDITS    # outra classe de ativo
 ```
 
-A partir daí o pipeline é automático: uma Lambda descompacta o `.zip`,
+A partir da chegada do `.zip` (pela Lambda agendada ou pelo script
+manual) o restante do pipeline é automático: uma Lambda descompacta,
 uma state machine do Step Functions orquestra Glue + checagem de
 qualidade em paralelo, e uma checagem agendada cobre atualidade/linhagem.
 O "porquê" de cada peça está em [`docs/DECISOES.md`](docs/DECISOES.md).
@@ -113,7 +121,8 @@ O "porquê" de cada peça está em [`docs/DECISOES.md`](docs/DECISOES.md).
 ## Arquitetura na AWS, hoje
 
 ```
-ingerir_cumulative.sh --(CopyObject)--> raw/dtcc_zip/*.zip
+EventBridge (agenda, dias úteis) -> Lambda ingerir_cumulative --(CopyObject)--> raw/dtcc_zip/*.zip
+  (ou scripts/ingerir_cumulative.sh, manual -- backfill/data específica)
   -> Step Functions (aws_sfn_state_machine.pipeline)
        1. unzip_dtcc (Lambda)            -> raw/dtcc/*.csv
        2. em paralelo (Parallel):
@@ -164,12 +173,6 @@ Repositório upstream do plugin: https://github.com/aws/agent-toolkit-for-aws
 
 ## Tarefas futuras (ainda não construídas)
 
-- **Agendar a ingestão**: mover `scripts/ingerir_cumulative.sh` (o
-  download inicial) para dentro de uma Lambda com EventBridge Schedule,
-  rodando sozinho todo dia, sem depender do computador estar ligado —
-  único passo manual que resta em todo o pipeline. Também elimina o
-  alerta diário esperado da checagem de atualidade (ver
-  `docs/DECISOES.md`).
 - **Consistência sazonal**: a dimensão de qualidade que nem o Glue Data
   Quality nem a checagem de atualidade/linhagem cobrem — volume
   esperado variando por dia da semana/época do ano, em vez de uma média
