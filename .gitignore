@@ -10,3 +10,4 @@ data/gold/
 __pycache__/
 *.pyc
 .pytest_cache/
+terraform/.build/
