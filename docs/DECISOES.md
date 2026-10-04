@@ -1014,3 +1014,47 @@ continua correto mesmo que o repositório mude.
 **Limite inalterado**: a parametrização é só da skill em si (seus próprios
 caminhos/defaults). A execução completa de ponta a ponta contra uma segunda
 fonte real ainda não aconteceu nesta sessão -- ver seção anterior.
+
+## Skill `nova-fonte-dados` reestruturada com progressive disclosure (04/10/2026)
+
+**Pedido do usuário**: "Refatore a skill para que ela siga as melhores
+práticas de harness e contexto, preservando o foco de parametrização
+direta." Consultado o guia oficial de criação de skills do Claude Code
+(`skill-creator`): um `SKILL.md` é carregado por inteiro no contexto toda
+vez que a skill é acionada, mesmo quando a execução só precisa de uma parte
+dele -- por isso o padrão recomendado ("progressive disclosure") é manter o
+corpo principal pequeno e mover material de referência consultado só em
+pontos específicos do procedimento para arquivos à parte (`references/`,
+carregados só quando indicados; `assets/`, modelos usados na geração da
+saída), em vez de tudo num único arquivo.
+
+A versão anterior da skill (357 linhas) tinha as quatro tabelas de
+parâmetros e os três casos de mecanismo de ingestão no corpo do arquivo,
+mesmo esses sendo consultados em pontos distintos do procedimento (as
+tabelas espalhadas pelos passos 1, 3, 5 e 6; os três casos de ingestão
+mutuamente exclusivos -- só um se aplica por execução). Reestruturado em:
+
+- `SKILL.md` (211 linhas) -- objetivo, mapa de onde cada coisa vive, 9
+  passos do procedimento (mantidos no corpo principal porque são o fluxo
+  sempre executado, não material de consulta pontual), "quando perguntar"
+  e "fora de escopo".
+- `references/parametros.md` -- as quatro tabelas (entrada da execução,
+  caminhos do padrão, recursos Terraform compartilhados, defaults de
+  contrato), lido antes do passo 1.
+- `references/mecanismo-ingestao.md` -- os três casos de mecanismo de
+  ingestão (S3→S3, HTTP direto, API/página índice), lido no passo 3 só
+  depois de já se saber qual caso se aplica.
+- `assets/modulo-instancia.tf.example` -- o template do bloco `module` do
+  Terraform (antes um trecho de código dentro da prosa do passo 6), agora
+  um arquivo copiável com o comentário da edição manual necessária em
+  `DLQ_TF` já embutido.
+
+**Preservado**: o foco de parametrização da versão anterior (nenhum
+caminho/nome de recurso/valor cravado, ordem de precedência override >
+inferência > default) não mudou -- só mudou onde cada parâmetro mora.
+`SKILL.md` referencia os arquivos pelo nome e diz explicitamente em qual
+passo cada um deve ser lido, pra quem/o-que estiver executando a skill não
+precisar adivinhar quando abrir cada referência.
+
+**Limite inalterado**: ainda não houve execução de ponta a ponta contra uma
+segunda fonte real -- ver seções anteriores.

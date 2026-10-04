@@ -1,0 +1,37 @@
+# Template pro passo 6 do procedimento (ver SKILL.md e
+# references/parametros.md). Copie este bloco pra MAIN_TF, substitua
+# <nome> e os nomes entre <> pelos parâmetros reais -- releia MAIN_TF
+# primeiro e confirme que RECURSO_BUCKET/RECURSO_GLUE_ROLE/etc ainda
+# apontam pros recursos certos (ver tabela "Recursos Terraform
+# compartilhados" em references/parametros.md); não copie os nomes
+# de exemplo abaixo as cegas.
+
+locals {
+  fonte_<nome> = yamldecode(file("${path.module}/../<CONTRATOS_DIR>/<nome>.yaml"))
+}
+
+module "<nome>" {
+  source = "./modules/fonte" # valor de MODULO_TERRAFORM, relativo a MAIN_TF
+
+  fonte                      = local.fonte_<nome>
+  prefix                     = var.prefix
+  region                     = var.region
+  account_id                 = data.aws_caller_identity.me.account_id
+  bucket_name                = <RECURSO_BUCKET>.id
+  bucket_arn                 = <RECURSO_BUCKET>.arn
+  glue_role_arn              = <RECURSO_GLUE_ROLE>.arn
+  glue_catalog_database_name = <RECURSO_GLUE_DATABASE>.name
+  glue_catalog_database_arn  = <RECURSO_GLUE_DATABASE>.arn
+  athena_workgroup_name      = <RECURSO_ATHENA_WORKGROUP>.name
+  athena_workgroup_arn       = <RECURSO_ATHENA_WORKGROUP>.arn
+  sns_topic_arn              = <RECURSO_SNS_TOPIC>.arn
+  dlq_arn                    = <RECURSO_DLQ>.arn
+  glue_script_source_path    = "${path.module}/../<script_bronze_desta_fonte>"
+}
+
+# DLQ_TF precisa de uma edição manual separada: adicione os 4 ARNs desta
+# fonte (module.<nome>.zip_arrived_rule_arn,
+# module.<nome>.glue_bronze_concluido_rule_arn,
+# module.<nome>.checar_pipeline_agenda_rule_arn,
+# module.<nome>.ingestao_agendada_rule_arn) à política existente da fila --
+# não crie uma fila DLQ nova por fonte.
