@@ -16,8 +16,8 @@ resource "aws_cloudwatch_log_group" "unzip_dtcc" {
   retention_in_days = 14
 }
 
-resource "aws_cloudwatch_log_group" "trigger_bronze" {
-  name              = "/aws/lambda/${aws_lambda_function.trigger_bronze.function_name}"
+resource "aws_cloudwatch_log_group" "iniciar_pipeline" {
+  name              = "/aws/lambda/${aws_lambda_function.iniciar_pipeline.function_name}"
   retention_in_days = 14
 }
 

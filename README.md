@@ -621,17 +621,77 @@ pra não generalizar em cima de uma suposição. `scripts/ingerir_cumulative.sh`
 colunas reais do Cumulative) também ficaram fora -- são específicos
 demais do DTCC pra abstrair sem um segundo caso real.
 
+### Step Functions -- orquestração do pipeline Bronze (03/10/2026)
+
+**Motivação real**: em produção, o mesmo arquivo (`CFTC_CUMULATIVE_RATES_2026_10_02.csv`)
+gerou duas execuções completas e independentes do pipeline -- não
+concorrentes (`MaxConcurrentRuns` do Glue já é 1 por padrão, bloquearia
+isso se fossem simultâneas), **sequenciais**: a notificação do S3
+chegou duplicada (S3/EventBridge documentam entrega "at-least-once",
+não "exactly-once"), e cada entrega disparava o fluxo inteiro de novo,
+sem nenhuma noção de "isso já rodou". Sem corrupção de dado (a escrita
+da Bronze já era idempotente por partição), mas processamento e custo
+desperdiçados, e dois registros concorrendo na tabela de controle pra
+um único arquivo real.
+
+**O que mudou**: o encadeamento de Lambdas + regras do EventBridge
+(`unzip_dtcc` disparado direto pelo S3 -> `trigger_bronze` e
+`quality_check` como alvos independentes da mesma regra) virou uma
+state machine (`aws_sfn_state_machine.pipeline`, ver
+`terraform/step_functions.tf`):
+
+1. **Descompactar** (Task, invoca `unzip_dtcc.py`, sem mudar seu código)
+2. **Etapas em paralelo** (Parallel): o Glue (`glue:startJobRun.sync`
+   -- a state machine agora *espera* o job terminar, em vez de só
+   disparar e seguir) e a checagem de qualidade (`quality_check.py`,
+   sem mudar seu código) rodam ao mesmo tempo, exatamente como antes.
+
+`trigger_bronze.py` foi **aposentado** -- sua única responsabilidade
+(chamar `glue:StartJobRun` e logar "disparado") virou um Task nativo da
+state machine; o log de "disparado" deixa de existir a partir daqui
+(histórico anterior continua consultável, ver nota em `athena/queries.sql`).
+`job_concluido.py` **não mudou**: continua escutando o evento nativo
+"Glue Job State Change" do EventBridge, que dispara igual não importa
+quem chamou `StartJobRun` -- o desfecho do Glue na tabela de controle
+é o mesmo de antes.
+
+**A proteção contra duplicata real**: uma regra do EventBridge não
+permite controlar o *nome* de uma execução do Step Functions a partir
+do conteúdo do evento (só o input) -- confirmado contra pedidos de
+funcionalidade ainda abertos em ferramentas como CDK e no provider AWS
+do Terraform, pedindo exatamente isso. Por isso existe
+`lambda/iniciar_pipeline.py`: decide um nome de execução determinístico
+a partir do nome do arquivo `.zip` antes de chamar `StartExecution`. A
+idempotência de verdade vem da própria API do Step Functions (fluxos
+STANDARD): mesmo nome + mesmo input = sucesso idêntico, sem execução
+nova; mesmo nome + input diferente = `ExecutionAlreadyExists` -- os
+dois casos são tratados como sucesso por essa Lambda, nunca como erro.
+
+Defensivo, não a causa raiz corrigida: o branch do Glue tem `Retry` em
+`Glue.ConcurrentRunsExceededException` (dois arquivos *diferentes*
+colidindo no limite de concorrência, cenário distinto do que motivou
+isso) -- espera e tenta de novo em vez de falhar a execução.
+
+**Confirmado contra documentação oficial da AWS** (mesma exigência já
+aplicada ao protótipo do Glue Data Quality): as ações IAM exigidas pelo
+padrão `.sync` do Glue (`glue:StartJobRun`, `glue:GetJobRun`,
+`glue:GetJobRuns`, `glue:BatchStopJobRun`, sem controle por recurso --
+o Glue não suporta isso nessas ações), o formato do nome de erro pra
+`Retry`/`Catch` (`Glue.ConcurrentRunsExceededException`), e as regras
+de nome da API `StartExecution` (até 80 caracteres, sem barra nem
+outros caracteres especiais).
+
+**Limite que persiste**: isto orquestra só a Bronze. Quando Silver/Gold
+existirem, a mesma state machine ganha mais estados em sequência depois
+do Parallel -- a base pra isso já está pronta, só não há camada
+seguinte pra encadear ainda.
+
 ## Tarefas futuras (ainda não construídas)
 
 - **Agendar a ingestão**: mover `scripts/ingerir_cumulative.sh` (o
   download inicial) para dentro de uma Lambda com EventBridge Schedule,
   rodando sozinho todo dia, sem depender do computador estar ligado --
   único passo manual que resta em todo o pipeline.
-- **Step Functions**: hoje, dois CSVs chegando perto um do outro disparam
-  dois Glue runs concorrentes sobre a mesma pasta (inofensivo, mas
-  redundante -- ver aviso na seção da `trigger_bronze`). Step Functions
-  resolve isso com execução única por vez, e também orquestraria
-  Bronze → Silver → Gold em sequência.
 - **Generalizar pra outras fontes (passos 2 e 3)**: transformar os
   recursos do Terraform num módulo reutilizável, instanciado uma vez
   por fonte a partir do seu `config/fontes/<nome>.yaml` -- hoje só o

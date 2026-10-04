@@ -1,5 +1,7 @@
-# Dead-letter queue para os dois alvos da regra do EventBridge
-# (csv_arrived -> trigger_bronze, quality_check).
+# Dead-letter queue compartilhada pelos alvos de regras do EventBridge
+# que têm dead_letter_config: zip_arrived -> iniciar_pipeline (ver
+# step_functions.tf) e glue_bronze_concluido -> job_concluido (ver
+# observabilidade.tf).
 #
 # Sem isso, uma falha de entrega (throttle da Lambda, erro transiente da
 # AWS, um bug novo no código) faz o evento desaparecer silenciosamente --
@@ -7,8 +9,8 @@
 # evento que alimenta a observabilidade (observabilidade.tf), então faz
 # sentido fechar antes de seguir pra Silver.
 #
-# Uma fila só, compartilhada pelos dois alvos -- a mensagem que cai aqui
-# já carrega o evento original e qual regra/alvo falhou, então não há
+# Uma fila só, compartilhada pelos alvos -- a mensagem que cai aqui já
+# carrega o evento original e qual regra/alvo falhou, então não há
 # necessidade de uma fila por Lambda nesta escala.
 
 resource "aws_sqs_queue" "eventos_falhos" {
@@ -27,7 +29,14 @@ data "aws_iam_policy_document" "eventos_falhos_policy" {
     condition {
       test     = "ArnEquals"
       variable = "aws:SourceArn"
-      values   = [aws_cloudwatch_event_rule.csv_arrived.arn]
+      # Lista as duas regras que usam esta fila como DLQ -- faltava a
+      # glue_bronze_concluido aqui antes (só csv_arrived estava
+      # permitida), gap pré-existente que ficou visível ao reescrever
+      # este arquivo pra remover a regra aposentada.
+      values = [
+        aws_cloudwatch_event_rule.zip_arrived.arn,
+        aws_cloudwatch_event_rule.glue_bronze_concluido.arn,
+      ]
     }
   }
 }

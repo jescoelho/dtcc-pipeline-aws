@@ -1,6 +1,10 @@
-# Lambda que descompacta o Cumulative do DTCC, disparada quando um .zip
-# cai em raw/dtcc_zip/. Escopo desta etapa: só descompactar, não dispara
-# o Glue ainda (ver lambda/unzip_dtcc.py).
+# Lambda que descompacta o Cumulative do DTCC. Invocada pela state
+# machine (ver terraform/step_functions.tf), não mais diretamente pelo
+# S3 -- até 03/10/2026 era a Lambda alvo direto da notificação do
+# bucket; virou um Task da state machine quando o pipeline passou a ser
+# orquestrado por Step Functions (ver observabilidade.tf -> não, ver
+# step_functions.tf), pra poder esperar o Glue terminar e coordenar com
+# a checagem de qualidade sem precisar de mais regras do EventBridge.
 #
 # O provider "archive" (usado abaixo para empacotar o código Python) é
 # declarado em main.tf -- Terraform só aceita 1 bloco required_providers
@@ -73,161 +77,19 @@ resource "aws_lambda_function" "unzip_dtcc" {
   }
 }
 
-resource "aws_lambda_permission" "allow_s3" {
-  statement_id  = "AllowS3Invoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.unzip_dtcc.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.lake.arn
-}
-
-# ---------- Lambda 2/2: dispara o Glue Bronze quando o .csv aparece ----------
-# Responsabilidade separada da Lambda de descompactar, de propósito (ver
-# README.md, seção "Opção 2"): se o start_job_run falhar, isso não deve
-# ser confundido com uma falha na descompactação, que já funcionou; e dá
-# pra reagir ao mesmo evento com outras coisas (checagem de qualidade,
-# notificação -- tarefas futuras) sem tocar nesta Lambda.
-data "archive_file" "trigger_bronze_lambda" {
-  type        = "zip"
-  source_file = "${path.module}/../lambda/trigger_bronze.py"
-  output_path = "${path.module}/.build/trigger_bronze.zip"
-}
-
-resource "aws_iam_role" "trigger_bronze_lambda" {
-  name               = "${var.prefix}-trigger-bronze-lambda"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
-}
-
-resource "aws_iam_role_policy_attachment" "trigger_bronze_lambda_logs" {
-  role       = aws_iam_role.trigger_bronze_lambda.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-data "aws_iam_policy_document" "trigger_bronze_glue" {
-  statement {
-    actions   = ["glue:StartJobRun"]
-    resources = [aws_glue_job.bronze.arn]
-  }
-  statement {
-    # head_object no CSV que chegou, só pra ler o metadado execution-id
-    # gravado pelo unzip_dtcc.py (ver trigger_bronze.py) -- não lê o
-    # corpo do arquivo, só o cabeçalho.
-    actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.lake.arn}/${local.fonte.raw_prefix}*"]
-  }
-  statement {
-    # Tabela de controle (logs/execucoes/, ver athena/queries.sql) -- um
-    # registro por disparo, consultável via SQL, diferente do log do
-    # CloudWatch.
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.lake.arn}/logs/execucoes/*"]
-  }
-}
-
-resource "aws_iam_role_policy" "trigger_bronze_glue" {
-  role   = aws_iam_role.trigger_bronze_lambda.id
-  policy = data.aws_iam_policy_document.trigger_bronze_glue.json
-}
-
-resource "aws_lambda_function" "trigger_bronze" {
-  function_name    = "${var.prefix}-trigger-bronze"
-  role             = aws_iam_role.trigger_bronze_lambda.arn
-  handler          = "trigger_bronze.handler"
-  runtime          = "python3.12"
-  timeout          = 30
-  memory_size      = 128
-  filename         = data.archive_file.trigger_bronze_lambda.output_path
-  source_code_hash = data.archive_file.trigger_bronze_lambda.output_base64sha256
-
-  environment {
-    variables = {
-      GLUE_JOB_NAME = aws_glue_job.bronze.name
-    }
-  }
-}
-
 # ---------- Notificação do bucket ----------
-# O .zip tem um único consumidor (unzip_dtcc) -- isso o S3 resolve direto,
-# sem ambiguidade, então continua registrado aqui mesmo.
-#
-# O .csv em raw/dtcc/ tem DOIS consumidores independentes (trigger_bronze
-# e quality_check). O S3 não aceita duas regras com o mesmo prefixo+sufixo
-# apontando para Lambdas diferentes ("Configuration is ambiguously
-# defined") -- ele não tem como saber que as duas devem disparar. Por
-# isso o .csv usa um caminho diferente: `eventbridge = true` manda todo
-# evento do bucket também para o EventBridge, e lá sim uma regra pode ter
-# vários alvos. É o padrão certo para "um evento, N consumidores" -- o
-# mesmo mecanismo que a etapa futura de Step Functions usaria.
+# Só manda os eventos pro EventBridge -- não invoca nenhuma Lambda
+# diretamente. Antes (até 03/10/2026) havia um `lambda_function` aqui
+# invocando unzip_dtcc direto no upload do .zip; virou a regra
+# `zip_arrived` em step_functions.tf, que invoca uma Lambda que inicia a
+# state machine com nome de execução determinístico (ver
+# lambda/iniciar_pipeline.py) -- proteção contra entrega duplicada do
+# evento que um `lambda_function` direto aqui não teria.
 resource "aws_s3_bucket_notification" "unzip_on_upload" {
   bucket      = aws_s3_bucket.lake.id
   eventbridge = true
-
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.unzip_dtcc.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = local.fonte.zip_prefix
-    filter_suffix       = ".zip"
-  }
-
-  depends_on = [aws_lambda_permission.allow_s3]
-}
-
-resource "aws_cloudwatch_event_rule" "csv_arrived" {
-  name        = "${var.prefix}-csv-arrived"
-  description = "CSV chegou em raw/dtcc/ -- dispara o Glue Bronze e a checagem de qualidade, em paralelo"
-
-  # Bug real encontrado em produção: combinar {prefix}+{suffix} no mesmo
-  # array de "key" deveria funcionar como AND (é o que a documentação da
-  # AWS descreve), mas na prática não filtrou -- um arquivo em
-  # athena-results/*.csv (gerado pelo próprio script de configuração do
-  # Athena, no mesmo bucket) disparou esta regra, porque bate com o
-  # suffix mesmo não começando com raw/dtcc/. Resultado: 2 execuções do
-  # Glue disparadas à toa. Correção: usar só o prefixo -- raw/dtcc/ é
-  # exclusivo da Lambda unzip_dtcc, então basta isso pra identificar o
-  # evento certo, sem depender de uma combinação que não se mostrou
-  # confiável nesse nível de aninhamento (detail.object.key).
-  event_pattern = jsonencode({
-    source        = ["aws.s3"]
-    "detail-type" = ["Object Created"]
-    detail = {
-      bucket = { name = [aws_s3_bucket.lake.id] }
-      object = {
-        key = [
-          { prefix = local.fonte.raw_prefix },
-        ]
-      }
-    }
-  })
-}
-
-resource "aws_cloudwatch_event_target" "csv_arrived_to_trigger_bronze" {
-  rule      = aws_cloudwatch_event_rule.csv_arrived.name
-  target_id = "trigger-bronze"
-  arn       = aws_lambda_function.trigger_bronze.arn
-
-  # Sem isso, uma entrega que falhar desaparece sem rastro -- ver
-  # terraform/dlq.tf.
-  dead_letter_config {
-    arn = aws_sqs_queue.eventos_falhos.arn
-  }
-
-  retry_policy {
-    maximum_retry_attempts       = 3
-    maximum_event_age_in_seconds = 3600
-  }
-}
-
-resource "aws_lambda_permission" "allow_eventbridge_trigger_bronze" {
-  statement_id  = "AllowEventBridgeInvokeTriggerBronze"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.trigger_bronze.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.csv_arrived.arn
 }
 
 output "lambda_unzip" {
   value = aws_lambda_function.unzip_dtcc.function_name
-}
-output "lambda_trigger_bronze" {
-  value = aws_lambda_function.trigger_bronze.function_name
 }

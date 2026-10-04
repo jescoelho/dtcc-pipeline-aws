@@ -105,14 +105,24 @@ ORDER BY dt;
 -- Todo disparo do Glue Bronze, com o job_run_id pra cruzar com
 -- `aws glue get-job-run --run-id ...` se precisar investigar um run
 -- específico.
+--
+-- origem = 'trigger_bronze' só existe em registros ANTERIORES a
+-- 03/10/2026 -- essa etapa foi aposentada quando o pipeline passou a
+-- ser orquestrado por Step Functions (ver README, seção Step
+-- Functions): quem dispara o Glue agora é a própria state machine
+-- (integration glue:startJobRun.sync), sem Lambda nem registro
+-- "disparado" separado. O desfecho continua vindo de origem='glue_job'
+-- (job_concluido.py, que escuta o evento nativo do Glue e não mudou).
 SELECT dt, csv, job_run_id, "timestamp"
 FROM <DATABASE>.controle_execucoes
 WHERE origem = 'trigger_bronze'
 ORDER BY "timestamp" DESC;
 
--- Fluxo completo de uma execução, as 4 etapas lado a lado -- a pergunta
+-- Fluxo completo de uma execução, as etapas lado a lado -- a pergunta
 -- que a tabela não respondia antes desta extensão ("esse CSV terminou
 -- de processar com sucesso, e quanto tempo levou desde que chegou?").
+-- disparado_em fica NULL em execuções a partir de 03/10/2026 (ver nota
+-- da query acima) -- descompactado_em já marca o início do fluxo.
 SELECT
   execution_id,
   MIN(CASE WHEN origem = 'unzip_dtcc'    THEN "timestamp" END) AS descompactado_em,

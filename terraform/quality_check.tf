@@ -1,10 +1,11 @@
-# Lambda que confere qualidade básica do CSV (schema, volume, domínio de
-# Action type) quando ele aparece em raw/dtcc/ -- ver lambda/quality_check.py
-# para o raciocínio completo e README.md, seção "Checagem de qualidade de
+# Lambda que confere qualidade básica do CSV (volume contra o histórico)
+# quando ele aparece em raw/dtcc/ -- ver lambda/quality_check.py para o
+# raciocínio completo e README.md, seção "Checagem de qualidade de
 # dados".
 #
-# Reage ao MESMO evento do S3 que a trigger_bronze (ver lambda.tf), mas
-# como alvo independente -- roda em paralelo, não bloqueia o Glue. Se
+# Invocada por um branch em paralelo da state machine (ver
+# terraform/step_functions.tf), não mais por uma regra própria do
+# EventBridge -- roda ao lado do Glue, não bloqueia nem depende dele. Se
 # achar problema, publica no tópico SNS que já existe para falha do Glue
 # (observabilidade.tf): um só canal de alerta para "pipeline com
 # problema", não importa a causa.
@@ -98,34 +99,13 @@ resource "aws_lambda_function" "quality_check" {
   }
 }
 
-# Alvo independente da MESMA regra do EventBridge que dispara a
-# trigger_bronze (ver lambda.tf, aws_cloudwatch_event_rule.csv_arrived) --
-# o S3 não aceita duas Lambdas no mesmo prefixo/sufixo direto nele, daí o
-# evento passar pelo EventBridge, que sim permite múltiplos alvos.
-resource "aws_cloudwatch_event_target" "csv_arrived_to_quality_check" {
-  rule      = aws_cloudwatch_event_rule.csv_arrived.name
-  target_id = "quality-check"
-  arn       = aws_lambda_function.quality_check.arn
-
-  # Sem isso, uma entrega que falhar desaparece sem rastro -- ver
-  # terraform/dlq.tf.
-  dead_letter_config {
-    arn = aws_sqs_queue.eventos_falhos.arn
-  }
-
-  retry_policy {
-    maximum_retry_attempts       = 3
-    maximum_event_age_in_seconds = 3600
-  }
-}
-
-resource "aws_lambda_permission" "allow_eventbridge_quality_check" {
-  statement_id  = "AllowEventBridgeInvokeQualityCheck"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.quality_check.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.csv_arrived.arn
-}
+# Não precisa de aws_lambda_permission aqui: quem invoca esta Lambda
+# agora é a state machine (Task "ChecarQualidade" em
+# terraform/step_functions.tf), via API (sts:AssumeRole do papel da
+# state machine + lambda:InvokeFunction na política dele) -- permissão
+# baseada em identidade, não em política de recurso. `aws_lambda_permission`
+# só é necessário quando um serviço invoca via notificação/evento
+# nativo (S3, EventBridge), que não é mais o caso desta Lambda.
 
 output "lambda_quality_check" {
   value = aws_lambda_function.quality_check.function_name
