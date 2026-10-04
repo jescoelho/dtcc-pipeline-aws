@@ -800,3 +800,92 @@ para a média simples nesse mesmo cenário; ausência de ocorrências
 sazonais cai para a média simples automaticamente; e
 `SEMANAS_HISTORICO_SAZONAL` restringe de fato a janela (ocorrências
 fora dela não contaminam a média).
+
+## Módulo Terraform reutilizável -- passo 2 da generalização (04/10/2026)
+
+Retomando a "Tarefa futura" registrada desde o contrato de fonte
+(passo 1): os recursos do Terraform que eram "um por fonte, declarado à
+mão" -- Glue job, as 6 Lambdas (`unzip_dtcc`, `quality_check`,
+`iniciar_pipeline`, `job_concluido`, `checar_pipeline`,
+`ingerir_cumulative`), a state machine e as 4 regras do EventBridge que
+disparam algo por fonte (`zip_arrived`, `glue_bronze_failed`,
+`glue_bronze_concluido`, `checar_pipeline_agenda`,
+`ingestao_agendada`) -- viraram `terraform/modules/fonte`, um módulo
+só, instanciado uma vez por fonte real em `terraform/main.tf`.
+
+**O que ficou FORA do módulo, compartilhado entre fontes** (continua em
+`terraform/main.tf`, `dlq.tf`, `observabilidade.tf`): o bucket S3 (uma
+fonte é um conjunto de prefixos dentro dele, não um bucket próprio), o
+banco do Glue Data Catalog e o workgroup do Athena, o tópico SNS de
+alertas, a fila SQS de eventos falhos (DLQ) e o budget. Critério usado
+pra decidir o que entra no módulo e o que fica fora: um recurso que o
+AWS modela como singleton por conta/laboratório (o budget, por
+exemplo) ou que só pode ser criado uma vez por bucket (a notificação do
+S3 pro EventBridge -- `aws_s3_bucket_notification` só aceita uma por
+bucket) fica fora; o resto, que já era pensado como "um por fonte"
+mesmo antes do módulo existir (Glue job, Lambdas, state machine),
+entrou.
+
+**Bug de generalização encontrado e corrigido durante a extração**: o
+banco do Glue Data Catalog (`aws_glue_catalog_database`) tinha seu nome
+amarrado a `local.fonte.nome` (`"${var.prefix}_${local.fonte.nome}"`) --
+com uma fonte só, idêntico a um banco por laboratório; com uma segunda
+fonte, teria criado um SEGUNDO banco (em vez de uma segunda tabela no
+mesmo banco), exigindo migrar as tabelas existentes depois. Corrigido
+antes de existir essa segunda fonte pra sentir a dor: o banco agora
+chama só `replace(var.prefix, "-", "_")`, nome do recurso
+`aws_glue_catalog_database.lab` (era `.dtcc`) -- compartilhado de
+verdade, cada fonte ganha sua própria tabela dentro dele (`dtcc_bronze`
+hoje, `<fonte>_bronze` numa fonte futura), não seu próprio banco.
+
+**Convenção de nomenclatura única dentro do módulo**: todo recurso usa
+`local.nome = "${var.prefix}-${var.fonte.nome}"` como raiz (ex.: Lambda
+`${local.nome}-unzip`, state machine `${local.nome}-pipeline`, regra
+`${local.nome}-zip-arrived`) -- antes da extração, a nomenclatura
+cravada misturava `${var.prefix}-x-${local.fonte.nome}` com
+`${var.prefix}-x` sem o nome da fonte (`quality-check`,
+`iniciar-pipeline`, `job-concluido`, `checar-pipeline`), o que teria
+colidido entre duas fontes diferentes no mesmo laboratório -- corrigido
+junto com a extração, não deixado pra quando a colisão acontecesse de
+verdade.
+
+**O que o módulo recebe de fora, em vez de criar por conta própria**
+(ver `modules/fonte/variables.tf`): o contrato de fonte inteiro (`var.fonte`,
+um `yamldecode` já pronto -- um campo novo no YAML fica disponível
+dentro do módulo sem precisar editar `variables.tf`) e as referências
+aos recursos compartilhados (bucket, banco, workgroup, tópico SNS,
+fila DLQ, role do Glue). O único recurso que o módulo cria mas que
+*poderia* variar por fonte no futuro é o script do Glue job
+(`glue_script_source_path`, hoje sempre `glue/bronze_ingest.py` --
+script já genérico, dirigido pelos argumentos do contrato, mas uma
+fonte com formato de arquivo muito diferente do Cumulative poderia
+precisar do seu próprio).
+
+**O que NÃO foi feito agora, de propósito (passo 3, ainda em aberto)**:
+`main.tf` instancia o módulo uma vez, à mão (`module "dtcc" { ... }`),
+não com um `for_each` sobre uma lista de fontes. Automatizar isso (ler
+todos os arquivos de `config/fontes/*.yaml` e instanciar o módulo pra
+cada um) exigiria decidir, sem uma segunda fonte real: como a DLQ
+(`dlq.tf`) colecionaria os ARNs de regra de um número variável de
+módulos (hoje é uma lista fixa de 4 ARNs); se cada fonte continua
+compartilhando o mesmo bucket/banco/tópico/fila ou se alguma delas
+precisaria ser por fonte; e se o script de ingestão
+(`lambda/ingerir_cumulative.py`, específico do padrão de nome do
+Cumulative) é generalizável ou vira uma Lambda diferente por fonte.
+Três decisões de design que uma segunda fonte real responderia; sem
+ela, qualquer resposta agora seria uma suposição -- mesmo raciocínio já
+registrado no contrato de fonte quando o passo 1 foi feito.
+
+**Limite honesto sobre validação**: este ambiente não tem o binário do
+`terraform` instalado (sem acesso de rede pra instalar), então esta
+extração foi revisada à mão -- balanceamento de chaves, toda referência
+`var.*`/`module.dtcc.*`/`aws_*.*` resolvida contra o que é de fato
+declarado (scripts de verificação descartáveis, não comitados), e os
+41 testes Python (inalterados, não dependem do Terraform) continuam
+passando. **`terraform validate` e `terraform plan` ainda não foram
+rodados de verdade** -- rode os dois antes de um `apply`, com atenção
+redobrada: a mudança de nome dos recursos (banco do Glue Data Catalog,
+Lambdas, IAM roles, regras do EventBridge -- ver nomenclatura acima)
+faz o Terraform querer DESTRUIR os recursos antigos e CRIAR os novos
+em vez de atualizar em lugar, caso isto já tenha sido aplicado numa
+conta real antes desta extração.

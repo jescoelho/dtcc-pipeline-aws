@@ -2,22 +2,27 @@
 #
 # Fonte única de verdade pro que hoje identifica ESTA fonte, em vez de
 # estar cravado em Python (lambda/unzip_dtcc.py, lambda/quality_check.py,
-# glue/bronze_ingest.py) e em Terraform (main.tf, lambda.tf) ao mesmo
-# tempo. Passo 1 da generalização: o Terraform lê este arquivo
-# (yamldecode) e distribui cada campo pra onde ele já era consumido --
-# caminhos S3 pros argumentos do Glue job, pras variáveis de ambiente das
-# Lambdas e pros filtros do S3/EventBridge; campos de regra de qualidade
-# pra novos argumentos do Glue job, que monta o ruleset DQDL em runtime
-# (ver _montar_ruleset em glue/bronze_ingest.py) em vez de ter a string
-# inteira cravada no script.
+# glue/bronze_ingest.py) e em Terraform ao mesmo tempo. Passo 1 da
+# generalização: o Terraform lê este arquivo (yamldecode) e distribui
+# cada campo pra onde ele já era consumido -- caminhos S3, variáveis de
+# ambiente das Lambdas, filtros do S3/EventBridge, agendas do
+# EventBridge Schedule; campos de regra de qualidade pros argumentos do
+# Glue job, que monta o ruleset DQDL em runtime (ver _montar_ruleset em
+# glue/bronze_ingest.py) em vez de ter a string inteira cravada no
+# script.
 #
-# Adicionar uma fonte nova hoje significa: um arquivo como este +
-# duplicar os recursos do Terraform (ainda não é um módulo reutilizável
-# -- isso é o passo 2, só vale a pena depois de existir uma segunda fonte
-# de verdade pra validar contra). Script de ingestão (scripts/ingerir_cumulative.sh)
-# e o próprio parsing do CSV (que depende da estrutura real de 110
-# colunas do Cumulative) continuam fora deste contrato -- são específicos
-# demais do DTCC pra generalizar sem uma segunda fonte real na mão.
+# Passo 2 da generalização (04/10/2026): os recursos do Terraform que
+# eram "um por fonte, declarados à mão" (Glue job, as 6 Lambdas, a state
+# machine, as regras do EventBridge) viraram o módulo reutilizável
+# terraform/modules/fonte, instanciado em terraform/main.tf
+# (`module "dtcc" { fonte = yamldecode(file(".../dtcc.yaml")) ... }`).
+# Adicionar uma fonte nova agora significa: um arquivo como este + uma
+# segunda instância do módulo em main.tf -- não duplicar os recursos.
+# Script de ingestão (scripts/ingerir_cumulative.sh) e o próprio parsing
+# do CSV (que depende da estrutura real de 110 colunas do Cumulative)
+# continuam fora deste contrato (passo 3, ainda não feito) -- são
+# específicos demais do DTCC pra generalizar sem uma segunda fonte real
+# na mão.
 
 nome: dtcc
 

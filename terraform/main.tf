@@ -40,12 +40,11 @@ data "aws_caller_identity" "me" {}
 
 # ---------- Contrato de fonte ----------
 # Única fonte de verdade sobre o que é específico da fonte DTCC (ver
-# config/fontes/dtcc.yaml) -- caminhos S3 e regras de qualidade, lidos
-# aqui e distribuídos pros recursos que já os consumiam antes como
-# string cravada (Glue job, Lambdas, filtros do S3/EventBridge). Hoje só
-# existe uma fonte, então "fonte" ainda não é uma variável de módulo --
-# trocar de arquivo (ou adicionar uma segunda) é a próxima etapa da
-# generalização.
+# config/fontes/dtcc.yaml) -- lido aqui e passado pro módulo "fonte"
+# (ver module "dtcc" abaixo), que materializa Glue job, Lambdas, state
+# machine e regras do EventBridge pra essa fonte. Uma segunda fonte
+# real (passo 3 da generalização, ver docs/DECISOES.md) seria outro
+# yamldecode + outra instância do módulo, sem tocar no módulo em si.
 locals {
   fonte = yamldecode(file("${path.module}/../config/fontes/dtcc.yaml"))
 }
@@ -55,6 +54,9 @@ locals {
 }
 
 # ---------- S3 ----------
+# Compartilhado entre todas as fontes -- um bucket só para o
+# laboratório, cada fonte com seus próprios prefixos (contrato de
+# fonte: zip_prefix/raw_prefix/bronze_prefix).
 resource "aws_s3_bucket" "lake" {
   bucket        = local.bucket
   force_destroy = true # é laboratório: destroy apaga tudo
@@ -77,21 +79,20 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "lake" {
   }
 }
 
-locals {
-  glue_scripts = {
-    bronze = "bronze_ingest.py"
-  }
-}
-
-resource "aws_s3_object" "glue_script" {
-  for_each = local.glue_scripts
-  bucket   = aws_s3_bucket.lake.id
-  key      = "scripts/${each.value}"
-  source   = "${path.module}/../glue/${each.value}"
-  etag     = filemd5("${path.module}/../glue/${each.value}")
+# Só manda os eventos de criação de objeto pro EventBridge -- não invoca
+# nenhuma Lambda diretamente. Um bucket só aceita UMA
+# aws_s3_bucket_notification, por isso fica aqui (compartilhado), não
+# dentro do módulo: cada fonte filtra esse mesmo fluxo de eventos pela
+# sua própria regra do EventBridge (zip_arrived, dentro do módulo),
+# usando seu zip_prefix.
+resource "aws_s3_bucket_notification" "unzip_on_upload" {
+  bucket      = aws_s3_bucket.lake.id
+  eventbridge = true
 }
 
 # ---------- IAM do Glue ----------
+# Compartilhada entre fontes -- permissões já cobrem o bucket inteiro
+# (s3:*Object/ListBucket), não há necessidade de uma role por fonte.
 data "aws_iam_policy_document" "glue_assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -120,9 +121,7 @@ data "aws_iam_policy_document" "glue_s3" {
   statement {
     # Protótipo de Glue Data Quality (ver glue/bronze_ingest.py) --
     # enableDataQualityCloudWatchMetrics publica pass/fail por regra
-    # como métrica no namespace "Glue Data Quality". Não habilitamos
-    # enableDataQualityResultsPublishing (repositório nativo do Glue),
-    # então não precisa de permissão de Glue Data Quality API, só esta.
+    # como métrica no namespace "Glue Data Quality".
     actions   = ["cloudwatch:PutMetricData"]
     resources = ["*"]
   }
@@ -133,53 +132,19 @@ resource "aws_iam_role_policy" "glue_s3" {
   policy = data.aws_iam_policy_document.glue_s3.json
 }
 
-# ---------- Glue job — Bronze ----------
-# Só a Bronze por enquanto. Silver (resolver a cadeia de eventos) e Gold
-# entram como jobs novos quando chegar a vez de cada uma -- mesma lógica
-# usada no b3-pipeline-aws: infraestrutura acompanha o que já foi
-# validado localmente, não o roteiro inteiro de uma vez.
-resource "aws_glue_job" "bronze" {
-  name              = "${var.prefix}-bronze-ingest"
-  role_arn          = aws_iam_role.glue.arn
-  glue_version      = "4.0"
-  worker_type       = "G.1X"
-  number_of_workers = 2
-  timeout           = 30
-
-  command {
-    name            = "glueetl"
-    script_location = "s3://${aws_s3_bucket.lake.id}/${aws_s3_object.glue_script["bronze"].key}"
-    python_version  = "3"
-  }
-
-  default_arguments = {
-    "--raw_path"            = "s3://${aws_s3_bucket.lake.id}/${local.fonte.raw_prefix}"
-    "--bronze_path"         = "s3://${aws_s3_bucket.lake.id}/${local.fonte.bronze_prefix}"
-    "--enable-metrics"      = "true"
-    # Processa só os arquivos novos desde a última execução com sucesso,
-    # em vez de reler raw/dtcc/ inteira a cada run -- ver glue/bronze_ingest.py
-    # para a explicação completa.
-    "--job-bookmark-option" = "job-bookmark-enable"
-
-    # Campos do contrato de fonte (config/fontes/dtcc.yaml) que o job usa
-    # pra montar o ruleset DQDL em runtime (ver _montar_ruleset em
-    # glue/bronze_ingest.py), em vez de ter a string inteira cravada no
-    # script -- listas viram string separada por vírgula porque
-    # default_arguments do Glue só aceita string.
-    "--colunas_obrigatorias" = join(",", local.fonte.colunas_obrigatorias)
-    "--coluna_id"            = local.fonte.coluna_id
-    "--unicidade_minima"     = tostring(local.fonte.unicidade_minima)
-    "--coluna_dominio"       = local.fonte.coluna_dominio
-    "--valores_dominio"      = join(",", local.fonte.valores_dominio)
-  }
-}
-
-# ---------- Athena ----------
-# Nome vem do contrato de fonte (local.fonte.nome), não mais cravado --
-# achado da auditoria de generalização (04/10/2026): com nome=dtcc no
-# YAML, o valor final é idêntico a antes, só deixa de ser hardcoded.
-resource "aws_glue_catalog_database" "dtcc" {
-  name = replace("${var.prefix}_${local.fonte.nome}", "-", "_")
+# ---------- Athena / Glue Data Catalog ----------
+# Compartilhados entre fontes -- UM banco pro laboratório inteiro, com
+# uma tabela Bronze por fonte dentro dele (dtcc_bronze hoje; uma
+# segunda fonte ganharia <fonte>_bronze no mesmo banco), mais
+# controle_execucoes, compartilhada. Até a extensão deste módulo
+# (04/10/2026), o nome do banco vinha de local.fonte.nome -- um banco
+# por fonte, em vez de um banco por laboratório, o que teria criado um
+# segundo banco (e seria preciso migrar as tabelas) na primeira vez que
+# uma segunda fonte existisse. Corrigido aqui: nome vem só de
+# var.prefix, antes de existir uma segunda fonte de verdade pra sentir
+# essa dor.
+resource "aws_glue_catalog_database" "lab" {
+  name = replace(var.prefix, "-", "_")
 }
 
 resource "aws_athena_workgroup" "lab" {
@@ -211,15 +176,70 @@ resource "aws_budgets_budget" "lab" {
   }
 }
 
+# ---------- Fonte: DTCC ----------
+# Uma instância do módulo "fonte" por fonte real -- hoje só esta.
+# Adicionar uma segunda fonte significa um config/fontes/<nome>.yaml
+# novo + outro bloco `module` igual a este, apontando pro YAML dela;
+# nada dentro do módulo precisa mudar (ver docs/DECISOES.md).
+module "dtcc" {
+  source = "./modules/fonte"
+
+  fonte      = local.fonte
+  prefix     = var.prefix
+  region     = var.region
+  account_id = data.aws_caller_identity.me.account_id
+
+  bucket_name = aws_s3_bucket.lake.id
+  bucket_arn  = aws_s3_bucket.lake.arn
+
+  glue_role_arn = aws_iam_role.glue.arn
+
+  glue_catalog_database_name = aws_glue_catalog_database.lab.name
+  glue_catalog_database_arn  = aws_glue_catalog_database.lab.arn
+
+  athena_workgroup_name = aws_athena_workgroup.lab.name
+  athena_workgroup_arn  = aws_athena_workgroup.lab.arn
+
+  sns_topic_arn = aws_sns_topic.alertas.arn
+  dlq_arn       = aws_sqs_queue.eventos_falhos.arn
+
+  glue_script_source_path = "${path.module}/../glue/bronze_ingest.py"
+}
+
+# ---------- Saídas ----------
+# Nomes mantidos idênticos aos de antes do módulo -- scripts/*.sh e o
+# README continuam usando `terraform output -raw bucket` etc. sem
+# precisar saber que o valor agora vem de dentro de um módulo.
 output "bucket" {
   value = aws_s3_bucket.lake.id
 }
-output "glue_job_bronze" {
-  value = aws_glue_job.bronze.name
+output "database" {
+  value = aws_glue_catalog_database.lab.name
 }
 output "athena_workgroup" {
   value = aws_athena_workgroup.lab.name
 }
-output "database" {
-  value = aws_glue_catalog_database.dtcc.name
+output "glue_job_bronze" {
+  value = module.dtcc.glue_job_bronze
+}
+output "lambda_unzip" {
+  value = module.dtcc.lambda_unzip
+}
+output "lambda_quality_check" {
+  value = module.dtcc.lambda_quality_check
+}
+output "lambda_job_concluido" {
+  value = module.dtcc.lambda_job_concluido
+}
+output "lambda_iniciar_pipeline" {
+  value = module.dtcc.lambda_iniciar_pipeline
+}
+output "lambda_checar_pipeline" {
+  value = module.dtcc.lambda_checar_pipeline
+}
+output "lambda_ingerir_cumulative" {
+  value = module.dtcc.lambda_ingerir_cumulative
+}
+output "state_machine_pipeline" {
+  value = module.dtcc.state_machine_pipeline
 }

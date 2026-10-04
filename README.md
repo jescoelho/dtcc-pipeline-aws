@@ -139,9 +139,13 @@ EventBridge (agenda, dias úteis) -> Lambda ingerir_cumulative --(CopyObject)-->
   -> alertas: SNS (e-mail) | observabilidade: tabela controle_execucoes (Athena)
 ```
 
-Cada peça desse diagrama — por que essa escolha de serviço AWS e não
-outra, quais bugs reais apareceram, quais limites foram aceitos de
-propósito — está documentada em
+Tudo nesse diagrama, exceto o bucket S3/banco do Athena/tópico SNS/DLQ
+(compartilhados entre fontes, em `terraform/main.tf`), é um módulo
+Terraform reutilizável (`terraform/modules/fonte`), instanciado uma vez
+por fonte real a partir do seu `config/fontes/<nome>.yaml` — hoje só
+`module "dtcc"`. Cada peça desse diagrama — por que essa escolha de
+serviço AWS e não outra, quais bugs reais apareceram, quais limites
+foram aceitos de propósito — está documentada em
 [`docs/DECISOES.md`](docs/DECISOES.md), na ordem em que foi construída.
 Uma versão visual e interativa deste fluxo (com simulação passo a passo)
 está publicada como artifact e pode ser pedida a quem tem acesso à
@@ -173,11 +177,14 @@ Repositório upstream do plugin: https://github.com/aws/agent-toolkit-for-aws
 
 ## Tarefas futuras (ainda não construídas)
 
-- **Generalizar pra outras fontes (passos 2 e 3)**: transformar os
-  recursos do Terraform num módulo reutilizável, instanciado uma vez
-  por fonte a partir do seu `config/fontes/<nome>.yaml` — hoje só o
-  passo 1 (o contrato de configuração) está feito (ver
-  `docs/DECISOES.md`).
+- **Generalizar pra outras fontes (passo 3)**: os passos 1 (contrato de
+  configuração) e 2 (módulo Terraform reutilizável, ver
+  `docs/DECISOES.md`) estão feitos. Falta uma segunda fonte real —
+  outro `config/fontes/<nome>.yaml` + outra instância do módulo em
+  `terraform/main.tf` — pra validar a generalização contra um caso de
+  verdade, não uma suposição. `scripts/ingerir_cumulative.sh` e o
+  parsing do CSV pelo Glue continuam fora do contrato (específicos
+  demais do DTCC) até essa segunda fonte existir.
 - **Consistência sazonal por época do ano**: a checagem de volume já
   compara contra o mesmo dia da semana (ver `docs/DECISOES.md`), mas
   padrão mensal/trimestral/feriados ainda não — exigiria meses de
