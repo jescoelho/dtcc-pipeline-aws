@@ -1110,3 +1110,37 @@ empacotado.
 semântica -- não roda `terraform plan`, não sabe se os valores fazem
 sentido pra AWS de verdade. Ainda não houve execução de ponta a ponta da
 skill contra uma segunda fonte real.
+
+## SKILL.md reduzido a orquestrador puro (04/10/2026)
+
+**Pedido do usuário**: "Lembre-se que a skill.md deve ser enxuta e seu
+papel é ser orquestradora" -- a reestruturação anterior (progressive
+disclosure) já tinha movido tabelas e exemplos de código pra
+`references/`/`assets/`, mas o corpo dos 9 passos do procedimento ainda
+continha a explicação completa de "como fazer" cada um dentro do próprio
+`SKILL.md` (211 linhas) -- o arquivo ainda fazia dois papéis ao mesmo
+tempo: dizer o que fazer E explicar em detalhe como fazer.
+
+**O que mudou**: o "como" de cada passo foi extraído pra
+`references/procedimento.md` (o texto é o mesmo de antes, só mudou de
+arquivo) e pra `references/pre-leitura.md` (a lista de pré-leitura, que
+antes vivia dentro do próprio `SKILL.md`). O que ficou em `SKILL.md`
+(82 linhas): objetivo em 2 parágrafos, uma tabela "papel deste arquivo"
+listando os 6 arquivos de apoio e quando ler cada um, os 9 passos como uma
+lista de uma linha cada (o "o quê", não o "como"), "quando perguntar" e
+"fora de escopo" -- as únicas duas seções que precisam estar sempre visíveis
+porque são regras de controle (não detalhe de execução de um passo
+específico).
+
+**Por que isso é diferente de só "cortar linhas"**: o critério não foi
+tamanho por tamanho -- foi papel. Uma seção fica em `SKILL.md` se for
+necessária em toda execução, independente de qual passo está rodando
+(objetivo, quando parar, fora de escopo) ou se for o índice que diz onde
+achar o resto. Tudo que só é relevante num passo específico (o "como" do
+passo 3, por exemplo) não precisa estar carregado quando a execução está
+no passo 6 -- fica na referência, lida só quando chega a hora.
+
+**Sem mudança de comportamento**: o conteúdo de cada passo é idêntico ao
+da versão anterior, só mudou de arquivo. Os parâmetros, o script de
+validação e os exemplos continuam exatamente como documentados nas duas
+seções anteriores.
