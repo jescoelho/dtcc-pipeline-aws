@@ -35,10 +35,28 @@ resource "aws_iam_role_policy_attachment" "checar_pipeline_lambda_logs" {
 
 data "aws_iam_policy_document" "checar_pipeline_permissions" {
   statement {
-    # Lê a tabela de controle inteira (últimos JANELA_LINHAGEM_DIAS
-    # dias) -- diferente de quality_check.py, que só lê pra calcular
-    # uma média, esta Lambda precisa enxergar todas as etapas de cada
-    # execution_id.
+    # Consulta controle_execucoes via Athena em vez de listar/ler
+    # logs/execucoes/ arquivo por arquivo (achado da avaliação de
+    # eficiência, 04/10/2026) -- ver _consultar_athena em
+    # lambda/checar_pipeline.py.
+    actions   = ["athena:StartQueryExecution", "athena:GetQueryExecution", "athena:GetQueryResults"]
+    resources = [aws_athena_workgroup.lab.arn]
+  }
+  statement {
+    # Athena resolve a tabela via Glue Data Catalog por baixo -- sem
+    # isso, StartQueryExecution falha com acesso negado ao metadado da
+    # tabela/banco, não ao dado em si.
+    actions = ["glue:GetTable", "glue:GetDatabase", "glue:GetPartitions"]
+    resources = [
+      aws_glue_catalog_database.dtcc.arn,
+      "arn:aws:glue:${var.region}:${data.aws_caller_identity.me.account_id}:catalog",
+      "arn:aws:glue:${var.region}:${data.aws_caller_identity.me.account_id}:table/${aws_glue_catalog_database.dtcc.name}/*",
+    ]
+  }
+  statement {
+    # Dado que a query varre (controle_execucoes, ver athena/queries.sql)
+    # -- Athena lê isto com as credenciais de QUEM chamou
+    # StartQueryExecution, não com uma role própria do serviço.
     actions   = ["s3:GetObject"]
     resources = ["${aws_s3_bucket.lake.arn}/logs/execucoes/*"]
   }
@@ -48,14 +66,29 @@ data "aws_iam_policy_document" "checar_pipeline_permissions" {
     condition {
       test     = "StringLike"
       variable = "s3:prefix"
-      values   = ["logs/execucoes/*"]
+      values   = ["logs/execucoes/*", "athena-results/*"]
     }
   }
   statement {
+    # Resultado da query (CSV temporário) -- mesmo prefixo que
+    # aws_athena_workgroup.lab.result_configuration já usa.
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.lake.arn}/athena-results/*"]
+  }
+  statement {
     # Grava o próprio veredito (origem="checar_pipeline") na mesma
-    # tabela.
+    # tabela -- isto continua indo direto pro S3 (put_object), não via
+    # Athena: é 1 escrita por execução desta Lambda, não o padrão que
+    # motivou trocar a LEITURA por SQL.
     actions   = ["s3:PutObject"]
     resources = ["${aws_s3_bucket.lake.arn}/logs/execucoes/*"]
+  }
+  statement {
+    # Checagem de execuções travadas (ver _checar_execucoes_travadas) --
+    # cruza direto com o Step Functions em vez de inferir isso só pela
+    # tabela de controle.
+    actions   = ["states:ListExecutions"]
+    resources = [aws_sfn_state_machine.pipeline.arn]
   }
   statement {
     actions   = ["sns:Publish"]
@@ -69,11 +102,16 @@ resource "aws_iam_role_policy" "checar_pipeline_permissions" {
 }
 
 resource "aws_lambda_function" "checar_pipeline" {
-  function_name    = "${var.prefix}-checar-pipeline"
-  role             = aws_iam_role.checar_pipeline_lambda.arn
-  handler          = "checar_pipeline.handler"
-  runtime          = "python3.12"
-  timeout          = 60
+  function_name = "${var.prefix}-checar-pipeline"
+  role          = aws_iam_role.checar_pipeline_lambda.arn
+  handler       = "checar_pipeline.handler"
+  runtime       = "python3.12"
+  # 60s -> 90s: a leitura da tabela de controle agora é uma query no
+  # Athena (start -> poll -> busca resultado, ver _consultar_athena em
+  # lambda/checar_pipeline.py), não mais list_objects_v2/get_object
+  # direto -- mais rápido pra escalar, mas com latência de rede maior
+  # por chamada (cold start do Athena fica na faixa de 1-3s).
+  timeout          = 90
   memory_size      = 256
   filename         = data.archive_file.checar_pipeline_lambda.output_path
   source_code_hash = data.archive_file.checar_pipeline_lambda.output_base64sha256
@@ -82,6 +120,15 @@ resource "aws_lambda_function" "checar_pipeline" {
     variables = {
       BUCKET        = aws_s3_bucket.lake.id
       SNS_TOPIC_ARN = aws_sns_topic.alertas.arn
+      # Banco/workgroup do Athena -- consulta controle_execucoes por SQL
+      # em vez de listar/ler logs/execucoes/ arquivo por arquivo (achado
+      # da avaliação de eficiência, 04/10/2026).
+      DATABASE  = aws_glue_catalog_database.dtcc.name
+      WORKGROUP = aws_athena_workgroup.lab.name
+      # Cruza com o Step Functions direto (_checar_execucoes_travadas)
+      # pra achar execuções RUNNING há tempo demais, complementar à
+      # linhagem via tabela de controle.
+      STATE_MACHINE_ARN = aws_sfn_state_machine.pipeline.arn
       # Vêm do contrato de fonte (config/fontes/dtcc.yaml), mesmo padrão
       # de DIAS_HISTORICO/QUEDA_MAXIMA_TOLERADA em quality_check.tf.
       JANELA_LINHAGEM_DIAS  = tostring(local.fonte.janela_linhagem_dias)
