@@ -95,6 +95,12 @@ resource "aws_lambda_function" "quality_check" {
       # (config/fontes/dtcc.yaml), não cravado no código Python.
       DIAS_HISTORICO        = tostring(local.fonte.dias_historico)
       QUEDA_MAXIMA_TOLERADA = tostring(local.fonte.queda_maxima_tolerada)
+      # Consistência sazonal (comparar contra o mesmo dia da semana, ver
+      # _escolher_baseline em lambda/quality_check.py) -- parametrizável
+      # por fonte, cai pra DIAS_HISTORICO/QUEDA_MAXIMA_TOLERADA acima
+      # quando desligada ou sem ocorrências suficientes ainda.
+      CONSISTENCIA_SAZONAL      = tostring(local.fonte.consistencia_sazonal)
+      SEMANAS_HISTORICO_SAZONAL = tostring(local.fonte.semanas_historico_sazonal)
       # Usado só no assunto do e-mail de alerta ("[dtcc-pipeline] ...") --
       # antes cravado no Python, agora vem do contrato de fonte.
       NOME_FONTE = local.fonte.nome

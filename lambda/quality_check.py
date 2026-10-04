@@ -47,12 +47,22 @@ consultável no Athena, ver athena/queries.sql) com a contagem de linhas
 erro específico), isso é dado estruturado: histórico de volume por dia,
 consultável com SQL, e é a própria fonte que `_media_historica` lê.
 
-Variáveis de ambiente esperadas: SNS_TOPIC_ARN, DIAS_HISTORICO e
-QUEDA_MAXIMA_TOLERADA -- as duas últimas vêm do contrato de fonte
-(config/fontes/dtcc.yaml, ver terraform/quality_check.tf), não são mais
-constantes cravadas aqui. Default local (7 dias, 50%) só pra não quebrar
-se a env var faltar (ex.: rodando fora do Lambda) -- em produção sempre
-vêm do Terraform.
+Consistência sazonal (04/10/2026): além da média simples dos últimos
+DIAS_HISTORICO dias corridos, compara o volume de hoje contra a média do
+MESMO dia da semana (ex.: segunda contra as últimas SEMANAS_HISTORICO_SAZONAL
+segundas) quando CONSISTENCIA_SAZONAL estiver ligado -- lacuna registrada
+desde a criação desta checagem: uma fonte cujo volume varia
+previsivelmente por dia da semana não deveria ser comparada contra uma
+média que mistura todos os dias. Cai pra média simples automaticamente
+quando ainda não há ocorrências suficientes do mesmo dia da semana
+(pipeline recente) -- ver _escolher_baseline.
+
+Variáveis de ambiente esperadas: SNS_TOPIC_ARN, DIAS_HISTORICO,
+QUEDA_MAXIMA_TOLERADA, CONSISTENCIA_SAZONAL e SEMANAS_HISTORICO_SAZONAL --
+as quatro últimas vêm do contrato de fonte (config/fontes/dtcc.yaml, ver
+terraform/quality_check.tf), não são constantes cravadas aqui. Defaults
+locais só pra não quebrar se a env var faltar (ex.: rodando fora do
+Lambda) -- em produção sempre vêm do Terraform.
 """
 import csv
 import io
@@ -72,6 +82,11 @@ sns = boto3.client("sns")
 # cobrem execução fora do Lambda (ex.: teste local sem monkeypatch).
 DIAS_HISTORICO = int(os.environ.get("DIAS_HISTORICO", "7"))
 QUEDA_MAXIMA_TOLERADA = float(os.environ.get("QUEDA_MAXIMA_TOLERADA", "0.5"))
+# Consistência sazonal (comparar contra o mesmo dia da semana, não uma
+# média que mistura todos os dias) -- parametrizável por fonte; default
+# local liga por padrão, mas em produção sempre vem do contrato.
+CONSISTENCIA_SAZONAL = os.environ.get("CONSISTENCIA_SAZONAL", "true").lower() == "true"
+SEMANAS_HISTORICO_SAZONAL = int(os.environ.get("SEMANAS_HISTORICO_SAZONAL", "4"))
 # Nome da fonte (contrato de fonte, local.fonte.nome) -- usado só pra
 # identificar o remetente no assunto do e-mail de alerta. Antes era
 # "[dtcc-pipeline]" cravado; default "dtcc" preserva o texto de hoje.
@@ -106,13 +121,13 @@ def _checar(bucket: str, key: str) -> dict:
     linhas = sum(1 for _ in leitor)
 
     problemas = []
-    baseline = _media_historica(bucket)
+    baseline, rotulo = _escolher_baseline(bucket)
     if baseline is not None:
         limite = baseline * (1 - QUEDA_MAXIMA_TOLERADA)
         if linhas < limite:
             problemas.append(
-                f"volume muito abaixo do histórico: {linhas} linhas "
-                f"(média dos últimos {DIAS_HISTORICO} dias: {baseline:.0f})"
+                f"volume muito abaixo do histórico ({rotulo}): {linhas} linhas "
+                f"(média: {baseline:.0f})"
             )
 
     resultado = {"csv": f"s3://{bucket}/{key}", "linhas": linhas, "problemas": problemas}
@@ -129,12 +144,46 @@ def _checar(bucket: str, key: str) -> dict:
     return resultado
 
 
-def _media_historica(bucket: str, dias: int = DIAS_HISTORICO):
-    """Lê os registros de quality_check dos últimos `dias` dias (de
-    logs/execucoes/, a mesma tabela de controle que esta Lambda escreve)
-    e devolve a média de linhas. None se não houver histórico ainda
-    (primeiros dias do pipeline) -- nesse caso, a checagem é
-    simplesmente pulada, não vira falso alerta.
+def _escolher_baseline(bucket: str):
+    """Decide qual baseline usar pra comparar o volume de hoje, e devolve
+    (media, rotulo) -- ou (None, None) se não houver histórico nenhum
+    ainda (nesse caso a checagem de volume relativo é simplesmente
+    pulada, não vira falso alerta).
+
+    Tenta primeiro a consistência sazonal (mesmo dia da semana), se
+    ligada pelo contrato de fonte (CONSISTENCIA_SAZONAL); cai pra média
+    simples dos últimos DIAS_HISTORICO dias corridos se a sazonal ainda
+    não tiver ocorrências suficientes (pipeline recente) ou estiver
+    desligada -- nunca fica sem nenhuma checagem por falta de dado
+    sazonal.
+    """
+    if CONSISTENCIA_SAZONAL:
+        # Olhar pra trás `semanas * 7` dias corridos, filtrando só os que
+        # cairam no mesmo dia da semana de hoje, cobre exatamente as
+        # últimas `semanas` ocorrências desse dia da semana.
+        sazonal = _media_historica(
+            bucket, dias=SEMANAS_HISTORICO_SAZONAL * 7, mesmo_dia_semana=True
+        )
+        if sazonal is not None:
+            return sazonal, f"últimas {SEMANAS_HISTORICO_SAZONAL} ocorrências do mesmo dia da semana"
+
+    simples = _media_historica(bucket, dias=DIAS_HISTORICO)
+    if simples is not None:
+        return simples, f"média dos últimos {DIAS_HISTORICO} dias corridos"
+    return None, None
+
+
+def _media_historica(bucket: str, dias: int = DIAS_HISTORICO, mesmo_dia_semana: bool = False):
+    """Lê os registros de quality_check dos últimos `dias` dias corridos
+    (de logs/execucoes/, a mesma tabela de controle que esta Lambda
+    escreve) e devolve a média de linhas, ou None se não encontrar
+    nenhum registro na janela.
+
+    mesmo_dia_semana: se True, só considera dias cujo dia da semana
+    (segunda, terça, ...) seja igual ao de hoje -- é o que torna `dias`
+    uma janela em dias CORRIDOS equivalente a `dias // 7` ocorrências
+    desse dia da semana (consistência sazonal, ver _escolher_baseline).
+    Dias fora do dia da semana nem chegam a consultar o S3.
 
     Limite assumido: inclui dias com problema no cálculo da média (não
     filtra por status == "ok") -- uma queda real e sustentada rebaixa a
@@ -148,6 +197,8 @@ def _media_historica(bucket: str, dias: int = DIAS_HISTORICO):
 
     for i in range(1, dias + 1):
         dia = hoje - timedelta(days=i)
+        if mesmo_dia_semana and dia.weekday() != hoje.weekday():
+            continue
         prefixo = f"logs/execucoes/dt={dia.isoformat()}/"
         for pagina in paginador.paginate(Bucket=bucket, Prefix=prefixo):
             for item in pagina.get("Contents", []):

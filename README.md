@@ -173,16 +173,15 @@ Repositório upstream do plugin: https://github.com/aws/agent-toolkit-for-aws
 
 ## Tarefas futuras (ainda não construídas)
 
-- **Consistência sazonal**: a dimensão de qualidade que nem o Glue Data
-  Quality nem a checagem de atualidade/linhagem cobrem — volume
-  esperado variando por dia da semana/época do ano, em vez de uma média
-  simples dos últimos N dias (`_media_historica`, em
-  `lambda/quality_check.py`).
 - **Generalizar pra outras fontes (passos 2 e 3)**: transformar os
   recursos do Terraform num módulo reutilizável, instanciado uma vez
   por fonte a partir do seu `config/fontes/<nome>.yaml` — hoje só o
   passo 1 (o contrato de configuração) está feito (ver
   `docs/DECISOES.md`).
+- **Consistência sazonal por época do ano**: a checagem de volume já
+  compara contra o mesmo dia da semana (ver `docs/DECISOES.md`), mas
+  padrão mensal/trimestral/feriados ainda não — exigiria meses de
+  histórico real pra calibrar sem inventar um limite.
 
 ## Roteiro de evolução
 

@@ -735,3 +735,68 @@ invoke manual equivalente aos argumentos do script), uso da data de
 hoje (UTC) quando não especificada, registro na tabela de controle, e
 o alerta por SNS propagando a exceção original numa falha de cópia
 (sem registrar sucesso nesse caso).
+
+## Consistência sazonal -- comparar contra o mesmo dia da semana (04/10/2026)
+
+Última lacuna registrada na taxonomia de qualidade discutida desde a
+adoção do Glue Data Quality: a checagem de volume relativo
+(`_media_historica`, dentro de `lambda/quality_check.py`) comparava o
+volume de hoje contra uma média simples que mistura todos os últimos
+`DIAS_HISTORICO` dias corridos, sem distinguir dia da semana. Para um
+feed financeiro isso é uma limitação real -- segunda-feira acumula o
+fim de semana, fim de mês/trimestre tem padrão próprio -- e misturar
+tudo numa única média tanto pode disparar falso alerta (uma
+segunda-feira normal comparada contra dias de meio de semana) quanto
+mascarar uma queda real (uma queda de segunda-feira dissolvida na média
+de dias "normais").
+
+**O que mudou**: nova função `_escolher_baseline`, chamada no lugar da
+chamada direta a `_media_historica`. Tenta primeiro a baseline sazonal
+-- `_media_historica(bucket, dias=SEMANAS_HISTORICO_SAZONAL * 7,
+mesmo_dia_semana=True)`, que filtra a janela de dias corridos pra só
+considerar os que cairam no mesmo dia da semana de hoje (uma janela de
+`N` semanas corridas contém exatamente `N` ocorrências de qualquer dia
+da semana fixo, então "semanas" e "ocorrências" são a mesma coisa aqui)
+-- e cai pra média simples (`DIAS_HISTORICO`/`QUEDA_MAXIMA_TOLERADA`,
+comportamento de antes) se a sazonal devolver `None` (zero ocorrências
+do mesmo dia da semana na janela) ou se `CONSISTENCIA_SAZONAL` estiver
+desligado pelo contrato de fonte. O rótulo usado na mensagem de alerta
+(`"mesmo dia da semana"` vs `"dias corridos"`) deixa explícito, a quem
+for investigar o alerta, qual baseline foi de fato usada.
+
+**Mantido parametrizável, não cravado**: dois campos novos no contrato
+de fonte (`config/fontes/dtcc.yaml`) -- `consistencia_sazonal` (liga/
+desliga o método por fonte) e `semanas_historico_sazonal` (quantas
+ocorrências do mesmo dia da semana olhar pra trás, default 4) --
+distribuídos para a Lambda como `CONSISTENCIA_SAZONAL` e
+`SEMANAS_HISTORICO_SAZONAL` (`terraform/quality_check.tf`), mesmo
+padrão já usado por `DIAS_HISTORICO`/`QUEDA_MAXIMA_TOLERADA`. Uma
+segunda fonte com volume que não varia por dia da semana (ou cujo
+calendário de publicação não seja dias úteis fixos) pode desligar o
+método sem tocar no código Python.
+
+**Por que não entrar em "época do ano" também**: a lacuna original
+mencionava os dois (dia da semana e época do ano), mas só a primeira
+foi construída agora -- consistência por época do ano (padrão
+mensal/trimestral, feriados) exigiria meses de histórico real pra
+calibrar sem arriscar um limite inventado; dia da semana já é uma
+melhoria concreta e verificável com poucas semanas de dado. Fica
+registrado como extensão futura, não construída.
+
+**Limite que persiste**: assim como a média simples que substitui,
+inclui dias com problema no cálculo (não filtra por `status == "ok"`)
+-- o mesmo limite já aceito em `_media_historica` desde a criação da
+checagem de volume, que esta extensão não resolve.
+
+Testado com S3 mockado respeitando a data real pedida em cada consulta
+(`tests/test_lambda_quality_check.py`, 4 testes novos, usando um helper
+`_mock_clients_por_data` diferente do `_mock_clients` das demais --
+este último ignora o prefixo pedido, o que não serve pra provar
+filtragem por dia da semana): a baseline sazonal é de fato a usada
+quando há histórico suficiente (um cenário onde a média simples e a
+sazonal dariam vereditos opostos sobre o mesmo arquivo -- só alerta se
+a sazonal for a baseline usada); `CONSISTENCIA_SAZONAL=false` reverte
+para a média simples nesse mesmo cenário; ausência de ocorrências
+sazonais cai para a média simples automaticamente; e
+`SEMANAS_HISTORICO_SAZONAL` restringe de fato a janela (ocorrências
+fora dela não contaminam a média).

@@ -63,6 +63,23 @@ valores_dominio:
 dias_historico: 7
 queda_maxima_tolerada: 0.5
 
+# Consistência sazonal: compara o volume de hoje contra o histórico do
+# MESMO dia da semana (ex.: segunda-feira contra as `n` segundas
+# anteriores), em vez de misturar todos os dias numa única média -- uma
+# fonte com volume que varia previsivelmente por dia da semana (comum em
+# dado financeiro: segunda após fim de semana, fim de mês/trimestre)
+# não deveria disparar falso alerta só por isso. Cai automaticamente
+# para a média simples (dias_historico/queda_maxima_tolerada acima)
+# quando não houver ainda `semanas_historico_sazonal` ocorrências do
+# mesmo dia da semana (pipeline recente) -- nunca fica sem checagem
+# nenhuma por falta de dado sazonal.
+#
+# consistencia_sazonal: false desliga o método sazonal pra esta fonte
+# (volta a usar só a média simples) -- parametrizável por fonte, não um
+# interruptor global cravado no código.
+consistencia_sazonal: true
+semanas_historico_sazonal: 4
+
 # Checagem agendada (não reativa a evento) de atualidade e linhagem --
 # ver lambda/checar_pipeline.py e terraform/atualidade_linhagem.tf.
 # janela_linhagem_dias: quantos dias de tabela de controle ler a cada
