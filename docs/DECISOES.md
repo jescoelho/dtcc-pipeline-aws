@@ -889,3 +889,70 @@ Lambdas, IAM roles, regras do EventBridge -- ver nomenclatura acima)
 faz o Terraform querer DESTRUIR os recursos antigos e CRIAR os novos
 em vez de atualizar em lugar, caso isto já tenha sido aplicado numa
 conta real antes desta extração.
+
+## Skill de projeto `nova-fonte-dados` -- generalização via Claude Code, não só Terraform (04/10/2026)
+
+**Correção de rumo pedida pelo usuário**: o passo 3 da generalização (ver
+seção anterior) estava enquadrado como "automatizar a instanciação de
+múltiplas fontes no Terraform" (`for_each` sobre `config/fontes/*.yaml`).
+O usuário esclareceu que "múltiplas fontes" significava algo mais amplo:
+transformar este pipeline num modelo padrão de engenharia de dados, com
+agentes/skills especializadas que aplicam o padrão a uma fonte nova à
+medida que a demanda aparecer -- não (só) uma feature de Terraform.
+
+Duas perguntas em aberto foram respondidas diretamente pelo usuário:
+
+- **Onde a skill vive**: dentro deste repositório (`.claude/skills/`,
+  versionada com o código), não como skill de conta Claude (que eu havia
+  recomendado) nem as duas ao mesmo tempo -- decisão explícita de manter o
+  padrão junto do código que ele descreve, não espalhado entre repositório
+  e conta pessoal.
+- **O que a skill faz**: dada só uma URL de dados públicos gratuitos, gera
+  cada etapa do pipeline automaticamente, adaptada ao contexto real da nova
+  fonte -- não um questionário guiado campo a campo do contrato, nem geração
+  cega sem investigar o dado real. Ou seja, a skill precisa fazer o mesmo
+  trabalho de investigação que foi feito à mão pra DTCC (buscar a URL, baixar
+  uma amostra real, inferir schema/cadência/regras de qualidade a partir do
+  dado, não da descrição) antes de gerar qualquer arquivo.
+
+**O que foi criado**: `.claude/skills/nova-fonte-dados/SKILL.md`, uma skill
+de projeto (carregada só por quem abre este repositório com o Claude Code,
+diferente do plugin `aws-core`, que é instalado por máquina/conta e listado
+em `.claude/settings.json`). O arquivo documenta:
+
+- Pré-leitura obrigatória (quais arquivos do padrão existente ler antes de
+  gerar qualquer coisa -- contrato de referência, módulo Terraform, Lambdas
+  genéricas, convenção de testes).
+- Procedimento passo a passo: investigar a URL e o dado real primeiro (nunca
+  assumir estrutura pela descrição), nomear a fonte, decidir o mecanismo de
+  ingestão caso a caso (não forçar o padrão S3→S3 da DTCC quando a origem
+  real é HTTP comum ou uma API), decidir se `glue/bronze_ingest.py` serve
+  como está ou precisa de um script novo, escrever o contrato YAML, instanciar
+  `module "<nome>"` em `terraform/main.tf`, atualizar a lista de ARNs em
+  `terraform/dlq.tf`, escrever testes pytest seguindo a convenção existente,
+  revisar o Terraform à mão (mesma limitação sem binário `terraform`, ver
+  seção anterior) e documentar as suposições assumidas.
+- Uma lista explícita de "quando perguntar ao usuário em vez de assumir"
+  (nome ambíguo, falta de dado real suficiente, autenticação necessária,
+  qualquer coisa irreversível como rodar `apply`) -- pra não degenerar nem
+  num questionário longo (o que o usuário rejeitou) nem numa geração cega
+  sem nenhum checkpoint humano nas decisões que de fato importam.
+- O que fica deliberadamente fora de escopo: Silver/Gold, `for_each`
+  automático sobre múltiplas fontes (continua sem uma segunda fonte real
+  pra validar as três perguntas de design já registradas acima), aplicar
+  Terraform de fato, e sazonalidade por época do ano.
+
+**Por que repo-local e não conta**: skill de conta valeria pra qualquer
+projeto Claude Code do usuário, mas o padrão que ela replica -- contrato
+YAML com estes campos exatos, módulo `terraform/modules/fonte` com esta
+interface, estas 6 Lambdas genéricas -- só existe neste repositório. Uma
+skill de conta teria que reimplementar ou referenciar esse padrão de algum
+jeito; mantê-la dentro do repo garante que ela sempre lê a versão real do
+padrão (e evolui junto, via o mesmo histórico de commits) em vez de uma
+cópia que pode desatualizar.
+
+**Limite assumido**: esta skill nunca foi executada de ponta a ponta contra
+uma segunda fonte real nesta sessão -- é a mesma situação dos passos 1 e 2,
+decisões de design tomadas por raciocínio cuidadoso, sem uma fonte real pra
+validar contra a prática. A primeira vez que for usada deve ser tratada como
+um teste do próprio procedimento, não só da fonte nova.

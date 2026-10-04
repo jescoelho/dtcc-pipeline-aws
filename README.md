@@ -175,16 +175,29 @@ plugins de projeto — esta configuração vale só pro CLI/desktop local.
 Repositório upstream do plugin: https://github.com/aws/agent-toolkit-for-aws
 (caminho `plugins/aws-core`).
 
+### Skill para aplicar o padrão a uma fonte nova
+
+Além do plugin da AWS, este repositório tem sua própria skill de projeto —
+`.claude/skills/nova-fonte-dados/SKILL.md`, versionada com o código (não é
+um plugin de catálogo, nem uma skill de conta — vale só para quem abrir
+este repositório com o Claude Code). Dado apenas uma URL de dados públicos,
+ela gera o contrato de fonte, a instância do módulo Terraform, a lógica de
+ingestão/parsing adaptada e os testes, seguindo o mesmo padrão já aplicado
+à fonte DTCC — ver o arquivo da skill para o raciocínio completo, incluindo
+quando ela decide perguntar ao usuário em vez de assumir.
+
 ## Tarefas futuras (ainda não construídas)
 
 - **Generalizar pra outras fontes (passo 3)**: os passos 1 (contrato de
   configuração) e 2 (módulo Terraform reutilizável, ver
-  `docs/DECISOES.md`) estão feitos. Falta uma segunda fonte real —
-  outro `config/fontes/<nome>.yaml` + outra instância do módulo em
-  `terraform/main.tf` — pra validar a generalização contra um caso de
-  verdade, não uma suposição. `scripts/ingerir_cumulative.sh` e o
-  parsing do CSV pelo Glue continuam fora do contrato (específicos
-  demais do DTCC) até essa segunda fonte existir.
+  `docs/DECISOES.md`) estão feitos. O que faltava — replicar o padrão
+  numa segunda fonte real — agora é o trabalho da skill
+  `nova-fonte-dados` (acima), que gera contrato + instância do módulo +
+  ingestão adaptada a partir de uma URL, em vez de um `for_each`
+  automático sobre uma lista de fontes (essa automação continua sem
+  sentido sem pelo menos uma segunda fonte real rodando). `scripts/ingerir_cumulative.sh`
+  e o parsing do CSV pelo Glue continuam específicos demais do DTCC até
+  essa segunda fonte existir de verdade.
 - **Consistência sazonal por época do ano**: a checagem de volume já
   compara contra o mesmo dia da semana (ver `docs/DECISOES.md`), mas
   padrão mensal/trimestral/feriados ainda não — exigiria meses de
