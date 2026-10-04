@@ -1,0 +1,423 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Anatomia da Requisição</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap">
+<style>
+  /* layout: linha do tempo vertical, com um fork de duas colunas na etapa
+     paralela (Glue + checagem de qualidade rodando ao mesmo tempo) --
+     o olho desce junto com o fluxo de execução real */
+  :root{
+    --bg:#F3F5F8; --surface:#FFFFFF; --surface-2:#EAEEF3; --border:#D7DEE6;
+    --fg:#1B2430; --fg-dim:#5B6878; --fg-faint:#8A96A5;
+    --accent:#B9661F; --accent-fg:#FFFFFF; --accent-soft:#F3E4D3;
+    --ok:#2F7A6D; --ok-soft:#DCEFEA; --warn:#B3453C; --warn-soft:#F6DEDB;
+    --term-bg:#12161D; --term-fg:#D7DEE6; --term-dim:#7C8798; --term-accent:#E8A33D;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      color-scheme:dark;
+      --bg:#10151C; --surface:#171E27; --surface-2:#1D2531; --border:#293342;
+      --fg:#E7EAEE; --fg-dim:#AAB4C2; --fg-faint:#798294;
+      --accent:#E8A33D; --accent-fg:#1B140A; --accent-soft:#2E2414;
+      --ok:#4FB3A0; --ok-soft:#163029; --warn:#E2726B; --warn-soft:#331B19;
+      --term-bg:#0B0E13; --term-fg:#D7DEE6; --term-dim:#798294; --term-accent:#E8A33D;
+    }
+  }
+  :root[data-theme="dark"]{
+    color-scheme:dark;
+    --bg:#10151C; --surface:#171E27; --surface-2:#1D2531; --border:#293342;
+    --fg:#E7EAEE; --fg-dim:#AAB4C2; --fg-faint:#798294;
+    --accent:#E8A33D; --accent-fg:#1B140A; --accent-soft:#2E2414;
+    --ok:#4FB3A0; --ok-soft:#163029; --warn:#E2726B; --warn-soft:#331B19;
+    --term-bg:#0B0E13; --term-fg:#D7DEE6; --term-dim:#798294; --term-accent:#E8A33D;
+  }
+
+  *{box-sizing:border-box}
+  body{background:var(--bg); color:var(--fg); font-family:'Manrope',system-ui,sans-serif;
+       padding-inline:16px; padding-bottom:3rem;}
+  h1,h2,h3{font-family:'IBM Plex Mono',ui-monospace,monospace; letter-spacing:-0.01em; margin:0}
+  p{margin:0; line-height:1.5}
+  code,.mono{font-family:'IBM Plex Mono',ui-monospace,monospace}
+
+  .wrap{max-width:1180px; margin:0 auto}
+
+  header.page{padding:2.75rem 0 1.5rem; display:flex; flex-direction:column; gap:.9rem; max-width:720px}
+  header.page .eyebrow{font-family:'IBM Plex Mono',monospace; font-size:.72rem; letter-spacing:.14em;
+       text-transform:uppercase; color:var(--accent)}
+  header.page h1{font-size:clamp(1.6rem,4vw,2.3rem); font-weight:600}
+  header.page p{color:var(--fg-dim); font-size:.98rem}
+
+  .controls{display:flex; gap:.6rem; align-items:center; margin:1.1rem 0 2.2rem; flex-wrap:wrap}
+  button{font-family:'IBM Plex Mono',monospace; font-size:.8rem; letter-spacing:.02em;
+    border-radius:9px; padding:.62rem 1.05rem; cursor:pointer; border:1px solid var(--border);
+    background:var(--surface); color:var(--fg); transition:transform .12s ease, background .15s ease}
+  button:hover{transform:translateY(-1px)}
+  button:active{transform:translateY(0)}
+  button.primary{background:var(--accent); color:var(--accent-fg); border-color:transparent}
+  button:disabled{opacity:.45; cursor:default; transform:none}
+  .controls .hint{font-size:.78rem; color:var(--fg-faint)}
+
+  .stage{display:grid; grid-template-columns:1fr; gap:2rem}
+  @media (min-width:920px){
+    .stage{grid-template-columns:1.25fr 1fr; align-items:start}
+  }
+
+  /* ---- linha do tempo ---- */
+  .timeline{display:flex; flex-direction:column; align-items:center; min-width:0}
+  .node{width:min(600px,100%); background:var(--surface); border:1px solid var(--border);
+    border-radius:14px; padding:1.1rem 1.3rem; position:relative; transition:border-color .25s ease, box-shadow .25s ease}
+  .node.is-active{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  .node.optional{border-style:dashed}
+  .node-head{display:flex; align-items:flex-start; justify-content:space-between; gap:.75rem; margin-bottom:.45rem}
+  .node-title{display:flex; align-items:baseline; gap:.5rem; min-width:0}
+  .node-num{font-family:'IBM Plex Mono',monospace; color:var(--fg-faint); font-size:.78rem; flex:none}
+  .node-title h3{font-size:1rem; font-weight:600}
+  .node-body p{color:var(--fg-dim); font-size:.88rem}
+  .node-code{margin-top:.55rem; font-size:.78rem; color:var(--fg-dim); background:var(--surface-2);
+    border-radius:8px; padding:.5rem .65rem; overflow-x:auto}
+  .node-code .fn{color:var(--accent)}
+
+  .connector{width:2px; height:28px; background:var(--border); position:relative}
+  .connector.flash{background:var(--accent)}
+
+  .fork-svg{width:min(640px,100%); height:34px; display:block}
+  .fork-svg path{fill:none; stroke:var(--border); stroke-width:2; transition:stroke .25s ease}
+  .fork-svg.flash path{stroke:var(--accent)}
+  .fork-label{font-family:'IBM Plex Mono',monospace; font-size:.68rem; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--fg-faint); margin:.15rem 0 .35rem}
+
+  .branches{display:grid; grid-template-columns:1fr 1fr; gap:.85rem; width:min(640px,100%)}
+  @media (max-width:600px){ .branches{grid-template-columns:1fr} }
+  .branches .node{width:100%}
+
+  /* ---- badges de serviço AWS (discretos, de propósito) ---- */
+  .badge{display:inline-flex; align-items:center; gap:.35rem; font-family:'IBM Plex Mono',monospace;
+    font-size:.66rem; letter-spacing:.02em; color:var(--fg-faint); white-space:nowrap;
+    border:1px solid var(--border); border-radius:999px; padding:.2rem .55rem .2rem .4rem; flex:none}
+  .badge svg{width:12px; height:12px; stroke:currentColor; fill:none; stroke-width:1.6}
+  .tag{font-family:'IBM Plex Mono',monospace; font-size:.64rem; letter-spacing:.08em; text-transform:uppercase;
+    padding:.12rem .4rem; border-radius:5px}
+  .tag.cond{background:var(--warn-soft); color:var(--warn)}
+  .tag.ctrl{background:var(--ok-soft); color:var(--ok); text-transform:none; letter-spacing:0; font-size:.68rem}
+
+  .outputs{display:grid; grid-template-columns:1fr 1fr; gap:.85rem; width:min(640px,100%); margin-top:.4rem}
+  @media (max-width:600px){ .outputs{grid-template-columns:1fr} }
+  .outputs .node{width:100%}
+  .outputs .node h3{font-size:.95rem}
+  .outputs-label{font-family:'IBM Plex Mono',monospace; font-size:.68rem; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--fg-faint); margin:.5rem 0 .35rem; text-align:center}
+
+  /* ---- aside: fora do fluxo da requisição ---- */
+  .aside-card{margin:2.4rem auto 0; max-width:600px; border:1px dashed var(--border); border-radius:14px;
+    padding:1rem 1.2rem; background:var(--surface-2)}
+  .aside-card h4{font-family:'IBM Plex Mono',monospace; font-size:.78rem; letter-spacing:.04em;
+    color:var(--fg-faint); text-transform:uppercase; margin-bottom:.4rem}
+  .aside-card p{font-size:.85rem; color:var(--fg-dim)}
+
+  /* ---- painel de log (terminal) ---- */
+  .term-wrap{min-width:0}
+  @media (min-width:920px){ .term-wrap{position:sticky; top:1rem} }
+  .term{background:var(--term-bg); border-radius:14px; border:1px solid var(--border); overflow:hidden}
+  .term-bar{display:flex; align-items:center; gap:.5rem; padding:.6rem .9rem; border-bottom:1px solid #ffffff14}
+  .term-dot{width:9px; height:9px; border-radius:50%; background:#ffffff26}
+  .term-bar span.name{font-family:'IBM Plex Mono',monospace; font-size:.72rem; color:var(--term-dim); margin-left:.3rem}
+  .term-body{padding:.9rem 1rem 1.1rem; font-family:'IBM Plex Mono',monospace; font-size:.78rem;
+    color:var(--term-fg); min-height:360px; max-height:520px; overflow-y:auto; line-height:1.65}
+  .term-line{margin-bottom:.5rem; opacity:0; transform:translateY(3px); animation:in .25s ease forwards}
+  @keyframes in{to{opacity:1; transform:none}}
+  .term-line .t{color:var(--term-dim)}
+  .term-line .svc{color:var(--term-accent)}
+  .term-empty{color:var(--term-dim)}
+  .cursor{display:inline-block; width:7px; height:1em; background:var(--term-accent); vertical-align:-2px;
+    animation:blink 1s step-end infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  footer.services{max-width:1180px; margin:3rem auto 0; padding-top:1.4rem; border-top:1px solid var(--border);
+    display:flex; flex-wrap:wrap; gap:.5rem; align-items:center}
+  footer.services span.lbl{font-size:.72rem; color:var(--fg-faint); font-family:'IBM Plex Mono',monospace;
+    letter-spacing:.06em; text-transform:uppercase; margin-right:.3rem}
+</style>
+
+<svg style="display:none" aria-hidden="true">
+  <defs>
+    <symbol id="ic-s3" viewBox="0 0 24 24"><path d="M4 7c0-1.5 3.5-2.5 8-2.5s8 1 8 2.5v10c0 1.5-3.5 2.5-8 2.5s-8-1-8-2.5V7Z"/><path d="M4 7c0 1.5 3.5 2.5 8 2.5s8-1 8-2.5"/></symbol>
+    <symbol id="ic-eb" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.3"/><path d="M12 3v3.2M12 17.8V21M3 12h3.2M17.8 12H21M5.6 5.6l2.3 2.3M16.1 16.1l2.3 2.3M18.4 5.6l-2.3 2.3M7.9 16.1l-2.3 2.3"/></symbol>
+    <symbol id="ic-lambda" viewBox="0 0 24 24"><path d="M6 20 11 6 12.6 6 9 15.3M12 12.5 16 20M13.4 6.6 11.4 11.6"/></symbol>
+    <symbol id="ic-sfn" viewBox="0 0 24 24"><circle cx="5" cy="6" r="2"/><circle cx="19" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M6.6 7.2 10.4 16.3M17.4 7.2 13.6 16.3M7 6h10"/></symbol>
+    <symbol id="ic-glue" viewBox="0 0 24 24"><path d="M9 6a2.5 2.5 0 0 1 5 0v1h2a1 1 0 0 1 1 1v2h-1a2.2 2.2 0 0 0 0 4h1v2a1 1 0 0 1-1 1h-2v-1a2.5 2.5 0 0 0-5 0v1H7a1 1 0 0 1-1-1v-2h1a2.2 2.2 0 0 0 0-4H6V8a1 1 0 0 1 1-1h2V6Z"/></symbol>
+    <symbol id="ic-sns" viewBox="0 0 24 24"><path d="M7 10a5 5 0 0 1 10 0v4l2 3H5l2-3v-4Z"/><path d="M10 20a2 2 0 0 0 4 0"/></symbol>
+    <symbol id="ic-athena" viewBox="0 0 24 24"><path d="M4 20h16M5 20V9M9 20V9M15 20V9M19 20V9M3 9l9-5 9 5"/></symbol>
+  </defs>
+</svg>
+
+<div class="wrap">
+  <header class="page">
+    <span class="eyebrow">dtcc-pipeline-aws · estudo de infra</span>
+    <h1>O que acontece entre o upload e a resposta</h1>
+    <p>Um <code>.zip</code> chega ao bucket. A partir daí, nenhuma linha de código "espera" o
+      usuário — tudo acontece em funções disparadas por eventos, cada uma sabendo só do seu
+      próprio pedaço. Esta página segue, estação por estação, o caminho real que esse arquivo
+      percorre — e separa, no final, as duas coisas bem diferentes que sobram dele: o
+      <strong>dado em si</strong> e o <strong>rastro de como ele chegou lá</strong>.</p>
+  </header>
+
+  <div class="controls">
+    <button class="primary" id="btn-run">Simular requisição</button>
+    <button id="btn-reset" disabled>Reiniciar</button>
+    <span class="hint" id="hint">clique em qualquer estação pra ler o detalhe técnico, mesmo sem simular</span>
+  </div>
+
+  <div class="stage">
+    <div class="timeline" id="timeline"></div>
+
+    <div class="term-wrap">
+      <div class="term">
+        <div class="term-bar"><div class="term-dot"></div><div class="term-dot"></div><div class="term-dot"></div>
+          <span class="name">execução · logs/execucoes/</span></div>
+        <div class="term-body" id="term-body">
+          <div class="term-empty">// clique em "Simular requisição" pra ver o log de execução aparecer aqui<span class="cursor"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="aside-card">
+    <h4>Fora desta requisição</h4>
+    <p>Uma Lambda separada (<code>checar_pipeline.py</code>) roda sozinha, uma vez por dia útil,
+      procurando ingestões que deveriam ter acontecido e não aconteceram. Ela não reage a nenhum
+      upload — por isso não aparece na linha acima: o que essa página mostra é o caminho de
+      <em>uma</em> requisição específica, do upload até o registro final.</p>
+  </div>
+
+  <footer class="services">
+    <span class="lbl">Serviços AWS neste caminho</span>
+  </footer>
+</div>
+
+<script>
+(function(){
+  const ICONS = {
+    s3:"ic-s3", eb:"ic-eb", lambda:"ic-lambda", sfn:"ic-sfn", glue:"ic-glue", sns:"ic-sns", athena:"ic-athena"
+  };
+  const SVC_NAME = {
+    s3:"Amazon S3", eb:"Amazon EventBridge", lambda:"AWS Lambda", sfn:"AWS Step Functions",
+    glue:"AWS Glue", sns:"Amazon SNS", athena:"Amazon Athena"
+  };
+
+  function badge(svc){
+    return `<span class="badge"><svg><use href="#${ICONS[svc]}"/></svg>${SVC_NAME[svc]}</span>`;
+  }
+  function ctrlTag(){
+    return '<span class="tag ctrl">grava 1+ registro em controle_execucoes</span>';
+  }
+
+  // Cada etapa real do fluxo -- ver lambda/*.py, glue/bronze_ingest.py e
+  // terraform/step_functions.tf no repositório (relido direto do GitHub
+  // em 04/10/2026). "log" é o que entra no painel quando a simulação
+  // passa por aqui; "code" é o detalhe técnico sempre visível no cartão;
+  // "ctrl:true" marca uma etapa que grava na tabela de controle -- é
+  // assim que o rastro se acumula, um pedaço por etapa, não de uma vez
+  // só no final.
+  const STEPS = [
+    { id:"upload", svc:["s3"], title:"A \u201crequisição\u201d real: cópia servidor-a-servidor",
+      body:"scripts/ingerir_cumulative.sh roda <code>aws s3 cp</code> de bucket pra bucket: do bucket público real do DTCC (kgc0418-tdw-data-0) direto pro bucket do laboratório. Isso usa a API CopyObject — o arquivo nunca passa pelo computador de quem roda o comando. É esse evento de cópia que inicia tudo.",
+      code:'aws s3 cp s3://kgc0418-tdw-data-0/cftc/eod/CFTC_CUMULATIVE_RATES_2026_10_02.zip \\<br>&nbsp;&nbsp;s3://bucket/raw/dtcc_zip/CFTC_CUMULATIVE_RATES_2026_10_02.zip',
+      log:"CopyObject servidor-a-servidor: DTCC → raw/dtcc_zip/" },
+    { id:"eventbridge", svc:["eb"], title:"S3 avisa que um objeto foi criado",
+      body:"A notificação nativa \u201cObject Created\u201d do S3 cai no barramento padrão do EventBridge. Uma regra (zip_arrived) filtra por bucket + prefixo e só então aciona um alvo — o S3 em si não sabe nada sobre Lambda ou Step Functions.",
+      code:'<span class="fn">aws_cloudwatch_event_rule</span> "zip_arrived" — event_pattern: source=aws.s3, prefix=raw/dtcc_zip/',
+      log:"evento Object Created casou com a regra zip_arrived" },
+    { id:"iniciar", svc:["lambda"], title:"iniciar_pipeline.py decide o nome da execução",
+      body:"Lê bucket/key do evento e deriva um nome de execução a partir do nome do arquivo — essa é a defesa contra entrega duplicada do evento (S3/EventBridge são \u201cat-least-once\u201d, não \u201cexactly-once\u201d). Não grava nada na tabela de controle: só decide o nome e chama o Step Functions.",
+      code:'nome = <span class="fn">_CARACTERES_INVALIDOS.sub</span>("-", nome_arquivo)[:80]<br>sfn.<span class="fn">start_execution</span>(name=nome, input=event)',
+      log:"iniciar_pipeline: nome de execução = CFTC_CUMULATIVE_RATES_2026_10_02-zip" },
+    { id:"sfn-start", svc:["sfn"], title:"A state machine assume o fluxo",
+      body:"Uma execução nomeada da state machine \u201cpipeline\u201d começa no estado Descompactar, recebendo o evento original do S3 como entrada.",
+      code:"StartAt: Descompactar",
+      log:"execução iniciada: CFTC_CUMULATIVE_RATES_2026_10_02-zip → estado Descompactar" },
+    { id:"unzip", svc:["lambda","s3"], title:"unzip_dtcc.py extrai o CSV", ctrl:true,
+      body:"Lê o .zip inteiro em memória, extrai o único .csv, grava em raw/dtcc/ com um execution_id novo (uuid) anexado como metadado do objeto — é esse metadado que amarra todas as etapas seguintes ao mesmo execution_id.",
+      code:'s3.<span class="fn">put_object</span>(..., Metadata={"execution-id": execution_id})',
+      log:"unzip_dtcc: .csv extraído → raw/dtcc/CFTC_...csv (execution_id atribuído)" }
+  ];
+
+  const PARALLEL = {
+    label:"estado Parallel — as duas branches rodam ao mesmo tempo",
+    branches:[
+      { id:"glue", svc:["glue","sfn"], title:"Glue lê, avalia qualidade e só então escreve", ctrl:true,
+        body:"A state machine chama glue:StartJobRun e espera terminar (.sync). Dentro do job (job bookmarks ligados, só processa arquivo novo): primeiro roda EvaluateDataQuality sobre o CSV cru — depois, com o mesmo DynamicFrame, escreve o Parquet particionado em bronze/dtcc/. A ordem importa: o dado é escrito mesmo se uma regra de qualidade falhar — aqui é observabilidade, não um portão que bloqueia a escrita.",
+        code:'dq = <span class="fn">EvaluateDataQuality</span>().process_rows(frame=dyf, ruleset=...)<br># ...grava 1 registro por regra...<br>df.write.mode("overwrite").parquet(bronze_path)  <span class="fn"># aqui nasce a Bronze</span>',
+        log:"Glue: job Bronze iniciado (aguardando conclusão)" },
+      { id:"quality", svc:["lambda"], title:"quality_check.py confere o volume", ctrl:true,
+        body:"Em paralelo, conta as linhas do CSV e compara com a média dos últimos dias, lida da própria tabela de controle. Se cair muito, publica um alerta — sem bloquear o Glue, que segue seu próprio caminho.",
+        code:'media = <span class="fn">_media_historica</span>(bucket)<br>if linhas < media * (1 - QUEDA_MAXIMA_TOLERADA): alerta()',
+        log:"quality_check: 26.840 linhas, dentro do histórico" }
+    ]
+  };
+
+  const STEPS_2 = [
+    { id:"merge", svc:["sfn"], title:"As duas pontas se encontram",
+      body:"O estado Parallel só termina quando as duas branches terminam. Se uma falhar sem Retry/Catch, a execução inteira falha — mesmo que a outra tenha ido bem. A Bronze, se o Glue chegou até lá, já existe desde antes deste ponto.",
+      code:"End: true (Parallel)",
+      log:"Parallel concluído: Glue OK + quality_check OK" },
+    { id:"job-concluido", svc:["lambda","eb"], title:"job_concluido.py fecha o ciclo do Glue", ctrl:true,
+      body:"Independente da state machine, o evento nativo \u201cGlue Job State Change\u201d dispara essa Lambda, que busca o run completo (duração, execution_id) e grava o desfecho — sucesso ou falha — na tabela de controle.",
+      code:'run = glue.<span class="fn">get_job_run</span>(JobName=..., RunId=...)',
+      log:"job_concluido: desfecho = succeeded, duração = 142s" },
+    { id:"sns", svc:["sns"], optional:true, title:"Um e-mail, só se precisar",
+      body:"Falha do Glue ou queda de volume publicam no mesmo tópico SNS, que manda e-mail. Sucesso não gera notificação nenhuma — ruído é o que ensina a ignorar o canal. Isso não grava nada na tabela: é só o aviso.",
+      code:'sns.<span class="fn">publish</span>(TopicArn=..., Subject="[dtcc-pipeline] ...")',
+      log:"(sem alerta — nada caiu fora do esperado nesta execução)" }
+  ];
+
+  // As DUAS coisas que sobram no final -- não é uma "resposta" única.
+  // A Bronze já existia desde o branch do Glue, bem antes deste ponto na
+  // linha do tempo; a tabela de controle é a soma de TODOS os registros
+  // marcados com ctrl:true acima, acumulados desde unzip_dtcc. Nenhuma
+  // das duas é "a resposta" no sentido de uma API -- são dois jeitos
+  // diferentes de olhar o que aconteceu, pra perguntas diferentes.
+  const OUTPUTS = [
+    { id:"out-bronze", svc:["s3","athena"], title:"O dado: tabela dtcc_bronze",
+      body:"O motivo de o pipeline existir. Já estava escrito desde o branch do Glue, em bronze/dtcc/, particionado por arquivo_origem. \u201cPergunta que ela responde\u201d: quais foram os NEWT/MODI/CORR/TERM daquele dia?",
+      code:"SELECT * FROM dtcc_bronze WHERE arquivo_origem = '...'" },
+    { id:"out-controle", svc:["s3","athena"], title:"O rastro: tabela controle_execucoes",
+      body:"A soma de todos os registros gravados nas etapas acima (unzip_dtcc, glue_data_quality, glue_job, quality_check) para este execution_id. \u201cPergunta que ela responde\u201d: esta execução específica terminou bem, e quanto tempo levou cada parte?",
+      code:"SELECT * FROM controle_execucoes WHERE execution_id = '...'" }
+  ];
+
+  const timeline = document.getElementById("timeline");
+  let n = 0;
+
+  function nodeHTML(step, globalIndex){
+    const badges = step.svc.map(badge).join("");
+    const condTag = step.optional ? '<span class="tag cond">condicional</span>' : "";
+    const num = globalIndex != null ? `<span class="node-num">${String(globalIndex).padStart(2,'0')}</span>` : "";
+    return `<div class="node ${step.optional?'optional':''}" data-id="${step.id}" tabindex="0">
+      <div class="node-head">
+        <div class="node-title">${num}<h3>${step.title}</h3></div>
+        <div style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">${condTag}${badges}</div>
+      </div>
+      <div class="node-body"><p>${step.body}</p>
+        ${step.ctrl ? `<div style="margin-top:.5rem">${ctrlTag()}</div>` : ""}
+        <div class="node-code" hidden>${step.code}</div>
+      </div>
+    </div>`;
+  }
+
+  function connector(){ return `<div class="connector" data-connector></div>`; }
+
+  let html = "";
+  STEPS.forEach((s,i)=>{ n++; html += nodeHTML(s,n) + connector(); });
+
+  html += `<div class="fork-label">${PARALLEL.label}</div>
+    <svg class="fork-svg" viewBox="0 0 200 34" data-fork="in"><path d="M100 0 L100 10 L50 28 M100 10 L150 28"/></svg>
+    <div class="branches">`;
+  PARALLEL.branches.forEach((b)=>{ n++; html += nodeHTML(b,n); });
+  html += `</div>
+    <svg class="fork-svg" viewBox="0 0 200 34" data-fork="out"><path d="M50 6 L100 24 L100 34 M150 6 L100 24"/></svg>`;
+
+  STEPS_2.forEach((s,i)=>{ n++; html += nodeHTML(s,n); html += connector(); });
+
+  html += `<div class="outputs-label">o que sobra: duas coisas, não uma resposta</div>
+    <div class="outputs">`;
+  OUTPUTS.forEach((o)=>{ html += nodeHTML(o, null); });
+  html += `</div>`;
+
+  timeline.innerHTML = html;
+
+  // detalhe técnico ao clicar em qualquer estação, com ou sem simulação
+  timeline.querySelectorAll(".node").forEach(node=>{
+    node.addEventListener("click", ()=>{
+      const code = node.querySelector(".node-code");
+      code.hidden = !code.hidden;
+    });
+    node.addEventListener("keydown", (e)=>{
+      if(e.key === "Enter" || e.key === " "){ e.preventDefault(); node.click(); }
+    });
+  });
+
+  // legenda discreta de serviços, rodapé
+  const allSvc = new Set();
+  [...STEPS, ...PARALLEL.branches, ...STEPS_2, ...OUTPUTS].forEach(s=>s.svc.forEach(v=>allSvc.add(v)));
+  const footer = document.querySelector("footer.services");
+  allSvc.forEach(v=>{ footer.insertAdjacentHTML("beforeend", badge(v)); });
+
+  // --- simulação ---
+  const termBody = document.getElementById("term-body");
+  const btnRun = document.getElementById("btn-run");
+  const btnReset = document.getElementById("btn-reset");
+  const hint = document.getElementById("hint");
+  let running = false;
+
+  function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+  function logLine(text, svc){
+    const t = document.createElement("div");
+    t.className = "term-line";
+    t.innerHTML = `<span class="t">[${String(++logLine.i||(logLine.i=1)).padStart(2,'0')}]</span> ${svc?`<span class="svc">${svc}</span> `:""}${text}`;
+    termBody.appendChild(t);
+    termBody.scrollTop = termBody.scrollHeight;
+  }
+
+  function setActive(ids, on){
+    ids.forEach(id=>{
+      const el = timeline.querySelector(`.node[data-id="${id}"]`);
+      if(el) el.classList.toggle("is-active", on);
+    });
+  }
+
+  function flashConnectors(){
+    timeline.querySelectorAll("[data-connector]").forEach(c=>c.classList.add("flash"));
+    timeline.querySelectorAll(".fork-svg").forEach(f=>f.classList.add("flash"));
+  }
+
+  async function run(){
+    running = true;
+    btnRun.disabled = true; btnReset.disabled = true;
+    hint.textContent = "simulando...";
+    termBody.innerHTML = "";
+    logLine.i = 0;
+    flashConnectors();
+
+    for(const s of STEPS){
+      setActive([s.id], true);
+      logLine(s.log, SVC_NAME[s.svc[0]]);
+      await sleep(620);
+      setActive([s.id], false);
+    }
+
+    setActive(PARALLEL.branches.map(b=>b.id), true);
+    PARALLEL.branches.forEach(b=> logLine(b.log, SVC_NAME[b.svc[0]]) );
+    await sleep(900);
+    setActive(PARALLEL.branches.map(b=>b.id), false);
+
+    for(const s of STEPS_2){
+      setActive([s.id], true);
+      logLine(s.log, SVC_NAME[s.svc[0]]);
+      await sleep(620);
+      setActive([s.id], false);
+    }
+
+    logLine("fim do fluxo — não existe resposta HTTP. Ficam duas coisas separadas:", null);
+    setActive(OUTPUTS.map(o=>o.id), true);
+    await sleep(300);
+    logLine("dtcc_bronze: já escrita desde o branch do Glue — é o dado.", "Amazon Athena");
+    await sleep(500);
+    logLine("controle_execucoes: soma de tudo que foi marcado “grava em controle” acima — é o rastro.", "Amazon Athena");
+    await sleep(700);
+    setActive(OUTPUTS.map(o=>o.id), false);
+
+    hint.textContent = "simulação concluída — clique em qualquer estação pra reabrir o detalhe técnico";
+    btnReset.disabled = false;
+    running = false;
+  }
+
+  btnRun.addEventListener("click", ()=>{ if(!running) run(); });
+  btnReset.addEventListener("click", ()=>{
+    termBody.innerHTML = '<div class="term-empty">// clique em "Simular requisição" pra ver o log de execução aparecer aqui<span class="cursor"></span></div>';
+    hint.textContent = "clique em qualquer estação pra ler o detalhe técnico, mesmo sem simular";
+    btnReset.disabled = true;
+  });
+})();
+</script>
+
+</body></html>
