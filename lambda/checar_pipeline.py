@@ -52,14 +52,25 @@ sns = boto3.client("sns")
 
 JANELA_LINHAGEM_DIAS = int(os.environ.get("JANELA_LINHAGEM_DIAS", "3"))
 MARGEM_LINHAGEM_HORAS = int(os.environ.get("MARGEM_LINHAGEM_HORAS", "2"))
+# Nome da fonte (contrato de fonte, local.fonte.nome) -- mesmo padrão de
+# quality_check.py: identifica o remetente no assunto do e-mail de
+# alerta. Default "dtcc" preserva o texto de hoje.
+NOME_FONTE = os.environ.get("NOME_FONTE", "dtcc")
 
-# As 4 etapas que uma execução completa deve deixar na tabela de
+# As etapas que uma execução completa deve deixar na tabela de
 # controle, pelo campo "origem" de cada uma -- mesma lista que
 # athena/queries.sql usa na query "fluxo completo de uma execução"
 # (ver descompactado_em/disparado_em/qualidade/desfecho_glue ali).
 # "trigger_bronze" não entra: foi aposentada em 03/10/2026 (ver
 # athena/queries.sql) e não existe mais em execuções novas.
-ETAPAS_ESPERADAS = ["unzip_dtcc", "glue_data_quality", "glue_job", "quality_check"]
+# Vem do contrato de fonte (config/fontes/dtcc.yaml, campo
+# etapas_esperadas) -- antes era uma lista fixa aqui, assumindo que toda
+# fonte futura teria exatamente estas 4 etapas com estes nomes (achado da
+# auditoria de generalização, 04/10/2026). Default local só pra não
+# quebrar execução fora do Lambda.
+ETAPAS_ESPERADAS = os.environ.get(
+    "ETAPAS_ESPERADAS", "unzip_dtcc,glue_data_quality,glue_job,quality_check"
+).split(",")
 
 
 def handler(event, context):
@@ -73,7 +84,7 @@ def handler(event, context):
     if problemas:
         sns.publish(
             TopicArn=os.environ["SNS_TOPIC_ARN"],
-            Subject="[dtcc-pipeline] atualidade/linhagem: problema encontrado",
+            Subject=f"[{NOME_FONTE}-pipeline] atualidade/linhagem: problema encontrado",
             Message="Problemas encontrados:\n- " + "\n- ".join(problemas),
         )
 

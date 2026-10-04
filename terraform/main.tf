@@ -175,8 +175,11 @@ resource "aws_glue_job" "bronze" {
 }
 
 # ---------- Athena ----------
+# Nome vem do contrato de fonte (local.fonte.nome), não mais cravado --
+# achado da auditoria de generalização (04/10/2026): com nome=dtcc no
+# YAML, o valor final é idêntico a antes, só deixa de ser hardcoded.
 resource "aws_glue_catalog_database" "dtcc" {
-  name = replace("${var.prefix}_dtcc", "-", "_")
+  name = replace("${var.prefix}_${local.fonte.nome}", "-", "_")
 }
 
 resource "aws_athena_workgroup" "lab" {

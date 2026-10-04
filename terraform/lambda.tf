@@ -59,7 +59,11 @@ resource "aws_iam_role_policy" "unzip_lambda_s3" {
 }
 
 resource "aws_lambda_function" "unzip_dtcc" {
-  function_name    = "${var.prefix}-unzip-dtcc"
+  # Nome vem do contrato de fonte (local.fonte.nome) -- antes era
+  # "-unzip-dtcc" cravado, única das 5 Lambdas que ainda carregava "dtcc"
+  # no nome do recurso (achado da auditoria de generalização, 04/10/2026).
+  # Com nome=dtcc no YAML, valor final idêntico a antes.
+  function_name    = "${var.prefix}-unzip-${local.fonte.nome}"
   role             = aws_iam_role.unzip_lambda.arn
   handler          = "unzip_dtcc.handler"
   runtime          = "python3.12"

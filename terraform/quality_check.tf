@@ -95,6 +95,9 @@ resource "aws_lambda_function" "quality_check" {
       # (config/fontes/dtcc.yaml), não cravado no código Python.
       DIAS_HISTORICO        = tostring(local.fonte.dias_historico)
       QUEDA_MAXIMA_TOLERADA = tostring(local.fonte.queda_maxima_tolerada)
+      # Usado só no assunto do e-mail de alerta ("[dtcc-pipeline] ...") --
+      # antes cravado no Python, agora vem do contrato de fonte.
+      NOME_FONTE = local.fonte.nome
     }
   }
 }

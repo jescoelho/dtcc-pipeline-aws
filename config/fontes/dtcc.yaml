@@ -27,6 +27,16 @@ zip_prefix: raw/dtcc_zip/
 raw_prefix: raw/dtcc/
 bronze_prefix: bronze/dtcc/
 
+# Fonte EXTERNA real do .zip -- até esta extensão era string cravada em
+# scripts/ingerir_cumulative.sh (bucket público do DTCC, padrão de nome
+# de arquivo), nunca no contrato. origem_padrao usa os mesmos placeholders
+# que o script já recebe como argumento (classe do ativo, fonte regulatória,
+# data): {fonte}, {fonte_upper}, {classe_ativo}, {data_underscore}.
+origem_bucket: kgc0418-tdw-data-0
+origem_padrao: "{fonte}/eod/{fonte_upper}_CUMULATIVE_{classe_ativo}_{data_underscore}.zip"
+origem_classe_ativo_default: RATES
+origem_fonte_default: cftc
+
 # Regras de qualidade que o AWS Glue Data Quality avalia (ver
 # glue/bronze_ingest.py) -- schema (colunas obrigatórias), identidade
 # (completude + unicidade da coluna que identifica univocamente uma
@@ -63,3 +73,21 @@ queda_maxima_tolerada: 0.5
 # ainda em andamento.
 janela_linhagem_dias: 3
 margem_linhagem_horas: 2
+
+# As etapas que uma execução completa deve deixar na tabela de controle
+# (campo "origem" de cada registro, ver lambda/checar_pipeline.py) --
+# antes era uma lista fixa no Python, assumindo que toda fonte futura
+# teria exatamente estas 4 etapas com estes nomes.
+etapas_esperadas:
+  - unzip_dtcc
+  - glue_data_quality
+  - glue_job
+  - quality_check
+
+# Agenda da checagem (ver terraform/atualidade_linhagem.tf) -- expressão
+# cron nativa do EventBridge. 11h UTC / seg-sex: dá margem pro Glue e às
+# duas Lambdas em paralelo terminarem de madrugada, e pula fim de semana
+# porque o DTCC não publica nesses dias. Uma fonte com calendário
+# diferente (ex.: publica todo dia, ou num fuso/horário diferente) só
+# precisa trocar esta linha -- não é mais cravado no Terraform.
+checagem_cron: "cron(0 11 ? * MON-FRI *)"

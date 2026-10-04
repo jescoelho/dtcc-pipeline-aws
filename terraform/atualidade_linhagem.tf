@@ -86,14 +86,24 @@ resource "aws_lambda_function" "checar_pipeline" {
       # de DIAS_HISTORICO/QUEDA_MAXIMA_TOLERADA em quality_check.tf.
       JANELA_LINHAGEM_DIAS  = tostring(local.fonte.janela_linhagem_dias)
       MARGEM_LINHAGEM_HORAS = tostring(local.fonte.margem_linhagem_horas)
+      # Usado só no assunto do e-mail de alerta -- antes cravado no
+      # Python, agora vem do contrato de fonte.
+      NOME_FONTE = local.fonte.nome
+      # Etapas esperadas por execução completa -- antes lista fixa no
+      # Python (ver lambda/checar_pipeline.py), agora vem do contrato de
+      # fonte. default_arguments/environment só aceitam string, daí o join.
+      ETAPAS_ESPERADAS = join(",", local.fonte.etapas_esperadas)
     }
   }
 }
 
 resource "aws_cloudwatch_event_rule" "checar_pipeline_agenda" {
-  name                = "${var.prefix}-checar-pipeline-agenda"
-  description         = "Dispara a checagem de atualidade/linhagem uma vez por dia útil"
-  schedule_expression = "cron(0 11 ? * MON-FRI *)"
+  name        = "${var.prefix}-checar-pipeline-agenda"
+  description = "Dispara a checagem de atualidade/linhagem uma vez por dia útil"
+  # Vem do contrato de fonte (config/fontes/dtcc.yaml) -- cada fonte pode
+  # ter seu próprio calendário/horário de publicação, não necessariamente
+  # seg-sex 11h UTC como o DTCC.
+  schedule_expression = local.fonte.checagem_cron
 }
 
 resource "aws_cloudwatch_event_target" "checar_pipeline_agenda_to_lambda" {

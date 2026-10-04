@@ -72,6 +72,10 @@ sns = boto3.client("sns")
 # cobrem execução fora do Lambda (ex.: teste local sem monkeypatch).
 DIAS_HISTORICO = int(os.environ.get("DIAS_HISTORICO", "7"))
 QUEDA_MAXIMA_TOLERADA = float(os.environ.get("QUEDA_MAXIMA_TOLERADA", "0.5"))
+# Nome da fonte (contrato de fonte, local.fonte.nome) -- usado só pra
+# identificar o remetente no assunto do e-mail de alerta. Antes era
+# "[dtcc-pipeline]" cravado; default "dtcc" preserva o texto de hoje.
+NOME_FONTE = os.environ.get("NOME_FONTE", "dtcc")
 
 
 def handler(event, context):
@@ -116,7 +120,7 @@ def _checar(bucket: str, key: str) -> dict:
     if problemas:
         sns.publish(
             TopicArn=os.environ["SNS_TOPIC_ARN"],
-            Subject=f"[dtcc-pipeline] qualidade de dados: {key}",
+            Subject=f"[{NOME_FONTE}-pipeline] qualidade de dados: {key}",
             Message="Problemas encontrados em s3://{}/{}:\n- {}".format(
                 bucket, key, "\n- ".join(problemas)
             ),
