@@ -1,7 +1,8 @@
 # Dead-letter queue compartilhada pelos alvos de regras do EventBridge
 # que têm dead_letter_config: zip_arrived -> iniciar_pipeline (ver
-# step_functions.tf) e glue_bronze_concluido -> job_concluido (ver
-# observabilidade.tf).
+# step_functions.tf), glue_bronze_concluido -> job_concluido (ver
+# observabilidade.tf) e checar_pipeline_agenda -> checar_pipeline (ver
+# atualidade_linhagem.tf).
 #
 # Sem isso, uma falha de entrega (throttle da Lambda, erro transiente da
 # AWS, um bug novo no código) faz o evento desaparecer silenciosamente --
@@ -29,13 +30,11 @@ data "aws_iam_policy_document" "eventos_falhos_policy" {
     condition {
       test     = "ArnEquals"
       variable = "aws:SourceArn"
-      # Lista as duas regras que usam esta fila como DLQ -- faltava a
-      # glue_bronze_concluido aqui antes (só csv_arrived estava
-      # permitida), gap pré-existente que ficou visível ao reescrever
-      # este arquivo pra remover a regra aposentada.
+      # Lista as três regras que usam esta fila como DLQ.
       values = [
         aws_cloudwatch_event_rule.zip_arrived.arn,
         aws_cloudwatch_event_rule.glue_bronze_concluido.arn,
+        aws_cloudwatch_event_rule.checar_pipeline_agenda.arn,
       ]
     }
   }

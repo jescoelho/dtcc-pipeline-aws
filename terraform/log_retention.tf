@@ -25,3 +25,8 @@ resource "aws_cloudwatch_log_group" "quality_check" {
   name              = "/aws/lambda/${aws_lambda_function.quality_check.function_name}"
   retention_in_days = 14
 }
+
+resource "aws_cloudwatch_log_group" "checar_pipeline" {
+  name              = "/aws/lambda/${aws_lambda_function.checar_pipeline.function_name}"
+  retention_in_days = 14
+}

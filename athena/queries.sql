@@ -171,6 +171,30 @@ WHERE origem = 'glue_data_quality'
 GROUP BY regra
 ORDER BY falhas DESC;
 
+-- ============================================================
+-- Atualidade e linhagem (lambda/checar_pipeline.py, agendada --
+-- terraform/atualidade_linhagem.tf) -- origem='checar_pipeline',
+-- um registro por dia útil, "problema" se achou pelo menos uma coisa
+-- (ingestão que não rodou no dia útil anterior, ou execução com etapa
+-- faltando na tabela de controle).
+-- ============================================================
+
+-- Histórico de execuções da checagem -- quando rodou, e se achou algo.
+SELECT dt, "timestamp", status, problemas
+FROM <DATABASE>.controle_execucoes
+WHERE origem = 'checar_pipeline'
+ORDER BY "timestamp" DESC;
+
+-- Só os dias em que achou problema, com o detalhe (um problema por
+-- linha do array `problemas`, via UNNEST) -- é o que vai pro e-mail do
+-- SNS, mas consultável depois do fato, sem depender de ainda ter a
+-- caixa de entrada.
+SELECT dt, "timestamp", problema
+FROM <DATABASE>.controle_execucoes
+CROSS JOIN UNNEST(problemas) AS t(problema)
+WHERE origem = 'checar_pipeline' AND status = 'problema'
+ORDER BY "timestamp" DESC;
+
 -- Nota: MSCK REPAIR precisa rodar de novo pra enxergar partições
 -- (dt=...) novas -- o mesmo limite que já existia na tabela dtcc_bronze.
 -- Rodar isso diariamente (ou antes de consultar) é manual por enquanto.

@@ -210,20 +210,27 @@ Outro achado da mesma avaliação: o log group de cada Lambda é criado
 automaticamente no primeiro invoke com retenção **"nunca expira"** --
 custo de armazenamento de CloudWatch Logs crescendo pra sempre, sem
 necessidade num laboratório que não precisa de histórico de meses.
-`terraform/log_retention.tf` define `retention_in_days = 14` pras três
-(`unzip_dtcc`, `trigger_bronze`, `quality_check`).
+`terraform/log_retention.tf` define `retention_in_days = 14`.
 
-**Passo manual necessário antes do `apply`**: os log groups já existem
-(foram criados pelas invocações que já rodamos), então o Terraform
-precisa importá-los pro estado em vez de criar do zero -- senão o
-`apply` falha com "log group already exists":
+**Passo manual necessário antes do `apply`, só para os log groups que já
+existiam na época desta etapa** (`unzip_dtcc` e `quality_check` --
+criados pelas invocações que já tínhamos rodado manualmente antes de o
+Terraform gerenciar isso): o Terraform precisa importá-los pro estado em
+vez de criar do zero, senão o `apply` falha com "log group already
+exists":
 
 ```bash
 cd terraform
 terraform import aws_cloudwatch_log_group.unzip_dtcc /aws/lambda/jessica-dtcclab-unzip-dtcc
-terraform import aws_cloudwatch_log_group.trigger_bronze /aws/lambda/jessica-dtcclab-trigger-bronze
 terraform import aws_cloudwatch_log_group.quality_check /aws/lambda/jessica-dtcclab-quality-check
 ```
+
+(A referência a `trigger_bronze` que existia aqui ficou desatualizada
+quando essa Lambda foi aposentada -- ver seção Step Functions; o recurso
+nem existe mais em `log_retention.tf`. Os log groups criados **depois**
+que o Terraform passou a existir -- `iniciar_pipeline`, `checar_pipeline`
+-- não precisam de import: o próprio Terraform cria cada um já com a
+Lambda correspondente, sem invocação manual prévia.)
 
 Depois do import, o `plan` deve mostrar só `retention_in_days` mudando
 de `null` pra `14` em cada um -- `~ update in-place`, nada de
@@ -686,19 +693,76 @@ existirem, a mesma state machine ganha mais estados em sequência depois
 do Parallel -- a base pra isso já está pronta, só não há camada
 seguinte pra encadear ainda.
 
+### Atualidade e linhagem -- checagem agendada, não reativa a evento (04/10/2026)
+
+Retomando o limite registrado na seção do Glue Data Quality: das 6
+dimensões de qualidade discutidas, completude/validade/unicidade já
+tinham dono (Glue Data Quality) e volume relativo já tinha
+(`quality_check.py`, contra o histórico). Faltavam **atualidade** e
+**linhagem** -- as duas têm uma característica em comum que nenhuma
+Lambda deste pipeline tinha até aqui: são sobre a **ausência** de
+alguma coisa, não sobre o conteúdo de um evento que aconteceu. Não
+existe notificação nativa da AWS para "o dia útil terminou e o arquivo
+não chegou" ou "uma execução começou e nunca mais apareceu na tabela de
+controle" -- só um runner que procura ativamente, numa agenda fixa,
+enxerga isso. Daí `lambda/checar_pipeline.py`, disparada uma vez por
+dia útil por `aws_cloudwatch_event_rule.checar_pipeline_agenda`
+(`schedule_expression`, não `event_pattern` -- ver
+`terraform/atualidade_linhagem.tf`), cron confirmado contra a
+documentação oficial da AWS (`cron(0 11 ? * MON-FRI *)`: dia-do-mês e
+dia-da-semana não podem ser especificados juntos, por isso o `?`).
+
+**Atualidade**: o dia útil imediatamente anterior a hoje (pulando fim
+de semana) teve pelo menos um `unzip_dtcc` na tabela de controle? Só
+olha o dia útil mais recente -- uma falha não acumula o mesmo alerta
+repetido todo dia depois.
+
+**Linhagem**: agrupando a tabela de controle por `execution_id`, toda
+execução iniciada há mais de `margem_linhagem_horas` (contrato de
+fonte, tempo de sobra pro Glue e as duas etapas em paralelo
+terminarem) tem as 4 etapas esperadas (`unzip_dtcc`,
+`glue_data_quality`, `glue_job`, `quality_check`)? Uma execução que
+começa e nunca termina não aciona nenhum alerta individual -- cada
+etapa isolada não "falha", ela simplesmente nunca aparece --, e só
+comparar o conjunto de etapas presentes contra o esperado enxerga essa
+lacuna. `trigger_bronze` (aposentada) não entra na lista -- não existe
+mais em execuções novas.
+
+As duas checagens usam o mesmo tópico SNS de `observabilidade.tf`
+(mesmo canal, não importa a causa) e gravam o próprio veredito na
+tabela de controle (`origem="checar_pipeline"`, ver
+`athena/queries.sql`).
+
+**Limite aceito de propósito, visível desde já**: hoje a ingestão é
+manual (`scripts/ingerir_cumulative.sh`, rodado à mão -- "Agendar a
+ingestão" abaixo é tarefa futura separada, ainda não construída). Isso
+significa que a checagem de atualidade vai alertar em **todo dia útil**
+em que ninguém rodar o script manualmente -- não é falso positivo, é
+exatamente o que "atualidade" deveria significar, e serve de pressão
+real pra priorizar a próxima tarefa (agendar a ingestão elimina esse
+alerta, em vez de precisar silenciá-lo).
+
+**Limite que persiste**: cobre atualidade e linhagem; **consistência
+sazonal** (ex.: volume esperado variar por dia da semana ou por época
+do ano, em vez de uma média simples dos últimos N dias) continua fora
+do escopo -- ver "Tarefas futuras".
+
 ## Tarefas futuras (ainda não construídas)
 
 - **Agendar a ingestão**: mover `scripts/ingerir_cumulative.sh` (o
   download inicial) para dentro de uma Lambda com EventBridge Schedule,
   rodando sozinho todo dia, sem depender do computador estar ligado --
-  único passo manual que resta em todo o pipeline.
+  único passo manual que resta em todo o pipeline. Também elimina o
+  alerta diário esperado da checagem de atualidade (ver seção acima).
+- **Consistência sazonal**: a dimensão de qualidade que nem o Glue Data
+  Quality nem a checagem de atualidade/linhagem cobrem -- volume
+  esperado variando por dia da semana/época do ano, em vez de uma média
+  simples dos últimos N dias (`_media_historica`, em
+  `lambda/quality_check.py`).
 - **Generalizar pra outras fontes (passos 2 e 3)**: transformar os
   recursos do Terraform num módulo reutilizável, instanciado uma vez
   por fonte a partir do seu `config/fontes/<nome>.yaml` -- hoje só o
   passo 1 (o contrato de configuração) está feito, ver seção acima.
-- **Atualidade, consistência sazonal, linhagem de dado**: as três
-  dimensões de qualidade que o Glue Data Quality não cobre (ver seção
-  acima) -- pedem um runner agendado, não reativo a evento.
 
 ## Roteiro de evolução
 

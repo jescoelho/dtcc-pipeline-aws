@@ -52,3 +52,14 @@ valores_dominio:
 # arquivo de hoje isolado.
 dias_historico: 7
 queda_maxima_tolerada: 0.5
+
+# Checagem agendada (não reativa a evento) de atualidade e linhagem --
+# ver lambda/checar_pipeline.py e terraform/atualidade_linhagem.tf.
+# janela_linhagem_dias: quantos dias de tabela de controle ler a cada
+# execução (cobre o pior caso de "dia útil anterior" cair numa
+# segunda-feira, 3 dias atrás contando o fim de semana).
+# margem_linhagem_horas: quanto tempo esperar antes de considerar uma
+# execução "deveria ter terminado" -- evita falso alerta numa execução
+# ainda em andamento.
+janela_linhagem_dias: 3
+margem_linhagem_horas: 2
