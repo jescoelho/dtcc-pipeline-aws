@@ -43,6 +43,8 @@ arquivo pequeno mesmo quando a execução é simples:
   passo 3, só depois de já saber qual caso é o da fonte investigada.
 - **`assets/modulo-instancia.tf.example`** — template do bloco `module` do
   Terraform. Copie e preencha no passo 6; não é lido antes disso.
+- **`scripts/validar_terraform.py`** — checagem heurística de balanceamento
+  e referências, usada no passo 8 (não precisa ler o código, só executar).
 
 Os nomes em `MAIÚSCULAS` abaixo (`CONTRATOS_DIR`, `RECURSO_BUCKET`, etc.) são
 os parâmetros definidos em `references/parametros.md`.
@@ -163,16 +165,29 @@ final e confirme que os testes novos e os já existentes continuam passando.
 
 Este tipo de ambiente normalmente não tem o binário `terraform` instalado
 nem acesso de rede pra instalá-lo (limitação já documentada em
-`DECISOES_MD`). Revise manualmente o balanceamento de chaves/parênteses, se
-toda referência `var.*`/`module.<nome>.*`/`aws_*.*` resolve a algo de fato
-declarado, se todo campo referenciado via `var.fonte.*` existe no YAML novo
-(e vice-versa), e a profundidade dos `${path.module}/../...` em qualquer
-`data.archive_file` nova (confira contra uma Lambda já existente dentro de
-`MODULO_TERRAFORM` — não assuma o número de níveis sem conferir).
+`DECISOES_MD`). Rode `scripts/validar_terraform.py` contra os arquivos
+novos/alterados (`MODULO_TERRAFORM` se for um módulo novo, ou os arquivos
+do módulo existente se só a instância mudou), passando `--contrato` com o
+YAML da fonte nova:
+
+```
+python .claude/skills/nova-fonte-dados/scripts/validar_terraform.py \
+  <MODULO_TERRAFORM ou arquivos alterados> --contrato <CONTRATOS_DIR>/<nome>.yaml
+```
+
+Ele cobre balanceamento de chaves/parênteses, se toda referência
+`var.*`/`module.<nome>.*`/`aws_*.*` resolve a algo declarado, e se todo
+campo do YAML é referenciado em `var.fonte.*` (e vice-versa) — a mesma
+checagem que já foi feita à mão, com scripts descartáveis, nas mudanças
+anteriores deste repositório. É heurística (regex, não um parser HCL
+completo) — confira manualmente qualquer problema que ele apontar antes de
+corrigir, e confira também a profundidade dos `${path.module}/../...` em
+qualquer `data.archive_file` nova (compare contra uma Lambda já existente
+dentro de `MODULO_TERRAFORM` — o script não checa isso).
 
 Diga explicitamente ao usuário que `terraform validate`/`terraform plan`
-ainda precisam ser rodados localmente antes de qualquer `apply` — esta
-skill não substitui essa etapa.
+ainda precisam ser rodados localmente antes de qualquer `apply` — nem esta
+skill nem o script substituem essa etapa.
 
 ### 9. Documentar
 

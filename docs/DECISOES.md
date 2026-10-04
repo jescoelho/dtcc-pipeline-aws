@@ -1058,3 +1058,55 @@ precisar adivinhar quando abrir cada referência.
 
 **Limite inalterado**: ainda não houve execução de ponta a ponta contra uma
 segunda fonte real -- ver seções anteriores.
+
+## Script bundled na skill `nova-fonte-dados` só para a validação do Terraform (04/10/2026)
+
+**Pedido do usuário**: "Verifique se seria útil disponibilizar tools para
+essa skill" -- avaliado contra a categoria `scripts/` do guia de criação de
+skills (`skill-creator`): "código executável pra tarefas determinísticas/
+repetitivas", e contra o próprio critério do guia pra decidir quando
+bundlar um: "se as execuções independentemente reinventam o mesmo script
+auxiliar, é sinal forte de que a skill deveria empacotá-lo".
+
+**Onde isso se aplica de verdade neste repositório**: o passo 8 do
+procedimento (validar o Terraform à mão, já que não há binário `terraform`
+disponível neste tipo de ambiente) tem sido feito, repetidamente, com
+scripts Python descartáveis que checam balanceamento de chaves e resolução
+de referências `var.*`/`module.*`/`aws_*.*` -- isso está documentado
+textualmente na seção "Módulo Terraform reutilizável" acima ("scripts de
+verificação descartáveis, não comitados"). É exatamente o padrão que o guia
+descreve: a mesma checagem, reescrita do zero a cada vez, por ser
+determinística (balanceamento de delimitadores e resolução de nome são
+mecânicos, não exigem julgamento).
+
+**O que foi criado**: `.claude/skills/nova-fonte-dados/scripts/validar_terraform.py`
+-- recebe um diretório/lista de arquivos `.tf` e, opcionalmente, o YAML do
+contrato da fonte (`--contrato`). Verifica: balanceamento de
+chaves/parênteses/colchetes por arquivo (ignorando os que aparecem dentro
+de strings); toda referência `var.*`, `module.<nome>.*`,
+`aws_*.*`/`data.*.*` resolvendo a algo declarado nos arquivos analisados;
+e, com `--contrato`, todo campo acessado via `var.fonte.*` existindo no
+YAML (e vice-versa, nenhum campo do YAML sem uso). Testado contra o módulo
+real (`terraform/modules/fonte`, 12 arquivos) -- passou limpo -- e contra
+duas cópias deliberadamente quebradas (uma chave faltando, uma variável
+inexistente referenciada) -- detectou as duas corretamente. Documentado
+como heurístico (regex, não um parser HCL) e explicitamente NÃO um
+substituto de `terraform validate`/`terraform plan`.
+
+**O que foi considerado e descartado**: um script equivalente pro passo 1
+(investigar a URL e os dados reais) -- rejeitado. O critério do guia é
+"tarefa determinística/repetitiva"; investigar uma fonte nova não é: cada
+URL pode ser um arquivo estático, uma API paginada, uma página índice, em
+qualquer formato, e decidir o que cada uma "significa" pro contrato
+(`coluna_id`, cadência, regras de qualidade) exige julgamento a cada vez,
+não um procedimento fixo. Um script genérico pra isso teria que
+reimplementar heurísticas frágeis pra uma variedade grande de formatos, e
+daria falsa confiança exatamente no ponto do procedimento que mais precisa
+de investigação cuidadosa em vez de automação. Fica como está: o passo 1
+usa as ferramentas de busca/leitura já disponíveis, sem um script
+empacotado.
+
+**Limite inalterado**: o script valida sintaxe e referências, não
+semântica -- não roda `terraform plan`, não sabe se os valores fazem
+sentido pra AWS de verdade. Ainda não houve execução de ponta a ponta da
+skill contra uma segunda fonte real.
