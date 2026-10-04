@@ -99,6 +99,10 @@
   .tag.cond{background:var(--warn-soft); color:var(--warn)}
   .tag.ctrl{background:var(--ok-soft); color:var(--ok); text-transform:none; letter-spacing:0; font-size:.68rem}
 
+  .why{margin-top:.55rem; padding-left:.65rem; border-left:2px solid var(--accent-soft);
+    font-size:.8rem; font-style:italic; color:var(--fg-faint)}
+  .why b{font-style:normal; color:var(--fg-dim); font-weight:600}
+
   .outputs{display:grid; grid-template-columns:1fr 1fr; gap:.85rem; width:min(640px,100%); margin-top:.4rem}
   @media (max-width:600px){ .outputs{grid-template-columns:1fr} }
   .outputs .node{width:100%}
@@ -182,10 +186,12 @@
 
   <div class="aside-card">
     <h4>Fora desta requisição</h4>
-    <p>Uma Lambda separada (<code>checar_pipeline.py</code>) roda sozinha, uma vez por dia útil,
-      procurando ingestões que deveriam ter acontecido e não aconteceram. Ela não reage a nenhum
-      upload — por isso não aparece na linha acima: o que essa página mostra é o caminho de
-      <em>uma</em> requisição específica, do upload até o registro final.</p>
+    <p>Duas coisas rodam sozinhas, sem reagir a nenhum upload — por isso não aparecem na linha
+      acima, que mostra o caminho de <em>uma</em> requisição específica: <code>ingerir_cumulative.py</code>,
+      agendada pra copiar o Cumulative do dia (ver etapa 1 — a cópia em si é mostrada acima
+      porque é ela que inicia a requisição; o agendamento que a dispara, não); e
+      <code>checar_pipeline.py</code>, que roda uma vez por dia útil procurando ingestões que
+      deveriam ter acontecido e não aconteceram.</p>
   </div>
 
   <footer class="services">
@@ -212,32 +218,38 @@
 
   // Cada etapa real do fluxo -- ver lambda/*.py, glue/bronze_ingest.py e
   // terraform/step_functions.tf no repositório (relido direto do GitHub
-  // em 04/10/2026). "log" é o que entra no painel quando a simulação
-  // passa por aqui; "code" é o detalhe técnico sempre visível no cartão;
-  // "ctrl:true" marca uma etapa que grava na tabela de controle -- é
-  // assim que o rastro se acumula, um pedaço por etapa, não de uma vez
-  // só no final.
+  // em 04/10/2026, incluindo a ingestão agendada e a consistência sazonal
+  // adicionadas no mesmo dia). "log" é o que entra no painel quando a
+  // simulação passa por aqui; "code" é o detalhe técnico sempre visível
+  // no cartão; "ctrl:true" marca uma etapa que grava na tabela de
+  // controle -- é assim que o rastro se acumula, um pedaço por etapa, não
+  // de uma vez só no final.
   const STEPS = [
-    { id:"upload", svc:["s3"], title:"A \u201crequisição\u201d real: cópia servidor-a-servidor",
-      body:"scripts/ingerir_cumulative.sh roda <code>aws s3 cp</code> de bucket pra bucket: do bucket público real do DTCC (kgc0418-tdw-data-0) direto pro bucket do laboratório. Isso usa a API CopyObject — o arquivo nunca passa pelo computador de quem roda o comando. É esse evento de cópia que inicia tudo.",
-      code:'aws s3 cp s3://kgc0418-tdw-data-0/cftc/eod/CFTC_CUMULATIVE_RATES_2026_10_02.zip \\<br>&nbsp;&nbsp;s3://bucket/raw/dtcc_zip/CFTC_CUMULATIVE_RATES_2026_10_02.zip',
-      log:"CopyObject servidor-a-servidor: DTCC → raw/dtcc_zip/" },
+    { id:"upload", svc:["s3","lambda"], title:"A “requisição” real: cópia servidor-a-servidor",
+      body:"Todo dia útil, ingerir_cumulative.py roda sozinha (agendada pelo EventBridge Schedule, contrato de fonte -&gt; ingestao_cron) e copia o Cumulative do dia direto do bucket público do DTCC (kgc0418-tdw-data-0) pro bucket do laboratório via CopyObject — o arquivo nunca passa por fora da AWS. scripts/ingerir_cumulative.sh faz a mesma cópia à mão; hoje só serve pra um backfill de data específica, não pro dia a dia. É esse evento de cópia (agendado ou manual) que inicia tudo.",
+      code:'s3.<span class="fn">copy_object</span>(Bucket=bucket, Key=destino_key,<br>&nbsp;&nbsp;CopySource={"Bucket": origem_bucket, "Key": nome_arquivo})<br># nome_arquivo vem de ORIGEM_PADRAO (contrato de fonte), com a data de hoje',
+      log:"ingerir_cumulative: CopyObject agendado → raw/dtcc_zip/",
+      why:"<b>Por que uma Lambda agendada, não só o script manual:</b> o script continua existindo pros dois casos que a Lambda não cobre (backfill de uma data específica, ou antes de a Lambda existir numa conta nova) — mas o dia a dia não deveria depender de alguém lembrar de rodar um comando." },
     { id:"eventbridge", svc:["eb"], title:"S3 avisa que um objeto foi criado",
-      body:"A notificação nativa \u201cObject Created\u201d do S3 cai no barramento padrão do EventBridge. Uma regra (zip_arrived) filtra por bucket + prefixo e só então aciona um alvo — o S3 em si não sabe nada sobre Lambda ou Step Functions.",
+      body:"A notificação nativa “Object Created” do S3 cai no barramento padrão do EventBridge. Uma regra (zip_arrived) filtra por bucket + prefixo e só então aciona um alvo — o S3 em si não sabe nada sobre Lambda ou Step Functions.",
       code:'<span class="fn">aws_cloudwatch_event_rule</span> "zip_arrived" — event_pattern: source=aws.s3, prefix=raw/dtcc_zip/',
-      log:"evento Object Created casou com a regra zip_arrived" },
+      log:"evento Object Created casou com a regra zip_arrived",
+      why:"<b>Por que EventBridge, não a notificação direta S3→Lambda</b> (que este pipeline já usou): só o EventBridge separa o evento de quem reage a ele — o mesmo padrão de regra + alvo + DLQ é reaproveitado depois pro término do Glue e pela checagem agendada, em vez de inventar um mecanismo por consumidor." },
     { id:"iniciar", svc:["lambda"], title:"iniciar_pipeline.py decide o nome da execução",
-      body:"Lê bucket/key do evento e deriva um nome de execução a partir do nome do arquivo — essa é a defesa contra entrega duplicada do evento (S3/EventBridge são \u201cat-least-once\u201d, não \u201cexactly-once\u201d). Não grava nada na tabela de controle: só decide o nome e chama o Step Functions.",
+      body:"Lê bucket/key do evento e deriva um nome de execução a partir do nome do arquivo — essa é a defesa contra entrega duplicada do evento (S3/EventBridge são “at-least-once”, não “exactly-once”). Não grava nada na tabela de controle: só decide o nome e chama o Step Functions.",
       code:'nome = <span class="fn">_CARACTERES_INVALIDOS.sub</span>("-", nome_arquivo)[:80]<br>sfn.<span class="fn">start_execution</span>(name=nome, input=event)',
-      log:"iniciar_pipeline: nome de execução = CFTC_CUMULATIVE_RATES_2026_10_02-zip" },
+      log:"iniciar_pipeline: nome de execução = CFTC_CUMULATIVE_RATES_2026_10_02-zip",
+      why:"<b>Por que uma Lambda, não o alvo nativo EventBridge→Step Functions:</b> esse alvo nativo só controla o input da execução, nunca o <code>name</code> — e sem escolher o nome não existe a defesa contra entrega duplicada que esta etapa existe justamente pra fazer." },
     { id:"sfn-start", svc:["sfn"], title:"A state machine assume o fluxo",
-      body:"Uma execução nomeada da state machine \u201cpipeline\u201d começa no estado Descompactar, recebendo o evento original do S3 como entrada.",
+      body:"Uma execução nomeada da state machine “pipeline” começa no estado Descompactar, recebendo o evento original do S3 como entrada.",
       code:"StartAt: Descompactar",
-      log:"execução iniciada: CFTC_CUMULATIVE_RATES_2026_10_02-zip → estado Descompactar" },
+      log:"execução iniciada: CFTC_CUMULATIVE_RATES_2026_10_02-zip → estado Descompactar",
+      why:"<b>Por que Step Functions, não uma cadeia de Lambdas com Destinations:</b> uma execução STANDARD já dá, de graça, idempotência por nome e o padrão <code>.sync</code> (espera o Glue terminar sem escrever polling) — uma cadeia de Lambdas teria que reimplementar as duas coisas à mão." },
     { id:"unzip", svc:["lambda","s3"], title:"unzip_dtcc.py extrai o CSV", ctrl:true,
       body:"Lê o .zip inteiro em memória, extrai o único .csv, grava em raw/dtcc/ com um execution_id novo (uuid) anexado como metadado do objeto — é esse metadado que amarra todas as etapas seguintes ao mesmo execution_id.",
       code:'s3.<span class="fn">put_object</span>(..., Metadata={"execution-id": execution_id})',
-      log:"unzip_dtcc: .csv extraído → raw/dtcc/CFTC_...csv (execution_id atribuído)" }
+      log:"unzip_dtcc: .csv extraído → raw/dtcc/CFTC_...csv (execution_id atribuído)",
+      why:"<b>Por que Lambda, não Glue:</b> descompactar ~16 MB em memória roda em segundos e não precisa de cluster Spark — chamar o Glue só pra isso seria pagar o tempo de provisionamento dele por um trabalho que nem é tabular." }
   ];
 
   const PARALLEL = {
@@ -246,11 +258,13 @@
       { id:"glue", svc:["glue","sfn"], title:"Glue lê, avalia qualidade e só então escreve", ctrl:true,
         body:"A state machine chama glue:StartJobRun e espera terminar (.sync). Dentro do job (job bookmarks ligados, só processa arquivo novo): primeiro roda EvaluateDataQuality sobre o CSV cru — depois, com o mesmo DynamicFrame, escreve o Parquet particionado em bronze/dtcc/. A ordem importa: o dado é escrito mesmo se uma regra de qualidade falhar — aqui é observabilidade, não um portão que bloqueia a escrita.",
         code:'dq = <span class="fn">EvaluateDataQuality</span>().process_rows(frame=dyf, ruleset=...)<br># ...grava 1 registro por regra...<br>df.write.mode("overwrite").parquet(bronze_path)  <span class="fn"># aqui nasce a Bronze</span>',
-        log:"Glue: job Bronze iniciado (aguardando conclusão)" },
+        log:"Glue: job Bronze iniciado (aguardando conclusão)",
+        why:"<b>Por que Glue, não Lambda ou EMR:</b> Lambda tem limite de 15 min e memória que não escala com o tamanho do arquivo, e o Glue Data Quality só existe integrado a um job Glue — não dá pra chamá-lo de uma Lambda sem reimplementar a avaliação; EMR exigiria gerenciar um cluster pra um job que roda minutos por dia." },
       { id:"quality", svc:["lambda"], title:"quality_check.py confere o volume", ctrl:true,
-        body:"Em paralelo, conta as linhas do CSV e compara com a média dos últimos dias, lida da própria tabela de controle. Se cair muito, publica um alerta — sem bloquear o Glue, que segue seu próprio caminho.",
-        code:'media = <span class="fn">_media_historica</span>(bucket)<br>if linhas < media * (1 - QUEDA_MAXIMA_TOLERADA): alerta()',
-        log:"quality_check: 26.840 linhas, dentro do histórico" }
+        body:"Em paralelo, conta as linhas do CSV e compara com uma média histórica — por padrão, a média do mesmo dia da semana nas últimas semanas (consistência sazonal: segunda-feira contra segundas anteriores, não contra o dia anterior), caindo pra uma média simples dos últimos dias se ainda não houver histórico sazonal suficiente. Se cair muito, publica um alerta — sem bloquear o Glue, que segue seu próprio caminho.",
+        code:'baseline, rotulo = <span class="fn">_escolher_baseline</span>(bucket)  <span class="fn"># sazonal, com fallback pra simples</span><br>if linhas < baseline * (1 - QUEDA_MAXIMA_TOLERADA): alerta()',
+        log:"quality_check: 26.840 linhas, dentro do histórico (baseline: mesma segunda-feira)",
+        why:"<b>Por que Lambda, não o próprio Glue Data Quality:</b> essa checagem compara contra vários dias de histórico lidos da tabela de controle — o Glue DQ só avalia o arquivo de hoje isolado, sem memória do que já passou, então não serve pra esse tipo de comparação." }
     ]
   };
 
@@ -258,15 +272,18 @@
     { id:"merge", svc:["sfn"], title:"As duas pontas se encontram",
       body:"O estado Parallel só termina quando as duas branches terminam. Se uma falhar sem Retry/Catch, a execução inteira falha — mesmo que a outra tenha ido bem. A Bronze, se o Glue chegou até lá, já existe desde antes deste ponto.",
       code:"End: true (Parallel)",
-      log:"Parallel concluído: Glue OK + quality_check OK" },
+      log:"Parallel concluído: Glue OK + quality_check OK",
+      why:"<b>Por que o estado Parallel, não duas chamadas sequenciais soltas:</b> deixa o Glue (minutos) e a checagem de volume (segundos) rodarem ao mesmo tempo, e já sabe falhar a execução inteira se um dos dois falhar sem Retry/Catch — replicar isso fora do Step Functions seria orquestração escrita à mão." },
     { id:"job-concluido", svc:["lambda","eb"], title:"job_concluido.py fecha o ciclo do Glue", ctrl:true,
-      body:"Independente da state machine, o evento nativo \u201cGlue Job State Change\u201d dispara essa Lambda, que busca o run completo (duração, execution_id) e grava o desfecho — sucesso ou falha — na tabela de controle.",
+      body:"Independente da state machine, o evento nativo “Glue Job State Change” dispara essa Lambda, que busca o run completo (duração, execution_id) e grava o desfecho — sucesso ou falha — na tabela de controle.",
       code:'run = glue.<span class="fn">get_job_run</span>(JobName=..., RunId=...)',
-      log:"job_concluido: desfecho = succeeded, duração = 142s" },
+      log:"job_concluido: desfecho = succeeded, duração = 142s",
+      why:"<b>Por que uma Lambda via EventBridge, não o próprio script do Glue se autorreportando:</b> se o job travar em TIMEOUT, ele nunca chega numa linha de código pra se reportar — só um listener externo, do lado de fora, vê esse desfecho." },
     { id:"sns", svc:["sns"], optional:true, title:"Um e-mail, só se precisar",
       body:"Falha do Glue ou queda de volume publicam no mesmo tópico SNS, que manda e-mail. Sucesso não gera notificação nenhuma — ruído é o que ensina a ignorar o canal. Isso não grava nada na tabela: é só o aviso.",
       code:'sns.<span class="fn">publish</span>(TopicArn=..., Subject="[dtcc-pipeline] ...")',
-      log:"(sem alerta — nada caiu fora do esperado nesta execução)" }
+      log:"(sem alerta — nada caiu fora do esperado nesta execução)",
+      why:"<b>Por que SNS, não a Lambda mandando e-mail direto (SES):</b> com SNS a própria regra de falha do Glue publica direto no tópico sem passar por nenhuma Lambda, e um novo destinatário (Slack, outro e-mail) entra depois sem tocar no código que já existe." }
   ];
 
   // As DUAS coisas que sobram no final -- não é uma "resposta" única.
@@ -277,11 +294,13 @@
   // diferentes de olhar o que aconteceu, pra perguntas diferentes.
   const OUTPUTS = [
     { id:"out-bronze", svc:["s3","athena"], title:"O dado: tabela dtcc_bronze",
-      body:"O motivo de o pipeline existir. Já estava escrito desde o branch do Glue, em bronze/dtcc/, particionado por arquivo_origem. \u201cPergunta que ela responde\u201d: quais foram os NEWT/MODI/CORR/TERM daquele dia?",
-      code:"SELECT * FROM dtcc_bronze WHERE arquivo_origem = '...'" },
+      body:"O motivo de o pipeline existir. Já estava escrito desde o branch do Glue, em bronze/dtcc/, particionado por arquivo_origem. “Pergunta que ela responde”: quais foram os NEWT/MODI/CORR/TERM daquele dia?",
+      code:"SELECT * FROM dtcc_bronze WHERE arquivo_origem = '...'",
+      why:"<b>Por que S3 + Athena, não um banco de dados:</b> a Bronze é escrita uma vez por dia e lida raramente — Athena consulta o Parquet direto no S3, sem nenhum cluster pra manter de pé entre uma ingestão e a próxima." },
     { id:"out-controle", svc:["s3","athena"], title:"O rastro: tabela controle_execucoes",
-      body:"A soma de todos os registros gravados nas etapas acima (unzip_dtcc, glue_data_quality, glue_job, quality_check) para este execution_id. \u201cPergunta que ela responde\u201d: esta execução específica terminou bem, e quanto tempo levou cada parte?",
-      code:"SELECT * FROM controle_execucoes WHERE execution_id = '...'" }
+      body:"A soma de todos os registros gravados nas etapas acima (unzip_dtcc, glue_data_quality, glue_job, quality_check) para este execution_id. “Pergunta que ela responde”: esta execução específica terminou bem, e quanto tempo levou cada parte?",
+      code:"SELECT * FROM controle_execucoes WHERE execution_id = '...'",
+      why:"<b>Por que S3 + Athena, não um banco:</b> cada etapa só grava um JSON novo, append-only — um banco exigiria conexão e schema fixo pra escritas que aqui são só um PutObject solto, um por evento." }
   ];
 
   const timeline = document.getElementById("timeline");
@@ -297,6 +316,7 @@
         <div style="display:flex;gap:.4rem;align-items:center;flex-wrap:wrap;justify-content:flex-end">${condTag}${badges}</div>
       </div>
       <div class="node-body"><p>${step.body}</p>
+        ${step.why ? `<p class="why">${step.why}</p>` : ""}
         ${step.ctrl ? `<div style="margin-top:.5rem">${ctrlTag()}</div>` : ""}
         <div class="node-code" hidden>${step.code}</div>
       </div>
