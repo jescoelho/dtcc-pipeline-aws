@@ -747,6 +747,27 @@ sazonal** (ex.: volume esperado variar por dia da semana ou por época
 do ano, em vez de uma média simples dos últimos N dias) continua fora
 do escopo -- ver "Tarefas futuras".
 
+## Ferramentas de desenvolvimento
+
+Este repositório é trabalhado com o [Claude Code](https://claude.com/claude-code).
+Pra quem for continuar o desenvolvimento (Terraform, Lambdas Python, Glue
+jobs) com Claude Code, o plugin oficial da AWS **`aws-core`** (publicado
+pela própria Amazon Web Services, tier `partner` no catálogo) traz skills
+especialistas nos serviços usados aqui -- IAM, Lambda, Step Functions,
+CloudFormation/CDK, storage, segurança, observabilidade, well-architected
+review, entre outros -- além de um servidor MCP (`aws-mcp`) para consultar
+a documentação da AWS direto na conversa.
+
+O plugin não é um arquivo deste repositório: ele é habilitado por conta/
+sessão no Claude Code (catálogo de plugins), não por `git clone` ou
+dependência de projeto. Quem continuar este laboratório pode habilitá-lo
+na própria conta em `claude.ai` (ou no app) procurando por `aws-core`
+(publicador: `aws`); esta seção documenta a recomendação para quem abrir
+o repositório depois.
+
+- Repositório upstream do plugin: https://github.com/aws/agent-toolkit-for-aws
+  (caminho `plugins/aws-core`)
+
 ## Tarefas futuras (ainda não construídas)
 
 - **Agendar a ingestão**: mover `scripts/ingerir_cumulative.sh` (o
