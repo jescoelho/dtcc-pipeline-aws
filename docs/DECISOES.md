@@ -956,3 +956,61 @@ uma segunda fonte real nesta sessão -- é a mesma situação dos passos 1 e 2,
 decisões de design tomadas por raciocínio cuidadoso, sem uma fonte real pra
 validar contra a prática. A primeira vez que for usada deve ser tratada como
 um teste do próprio procedimento, não só da fonte nova.
+
+## Skill `nova-fonte-dados` refatorada para ser parametrizável (04/10/2026)
+
+**Pedido do usuário**: "Refatore a skill para que ela seja parametrizável"
+-- o mesmo princípio já aplicado ao pipeline inteiro (contrato YAML como
+fonte única de verdade, nada cravado em dois lugares) ainda não valia pra
+própria skill: a primeira versão de `nova-fonte-dados/SKILL.md` tinha
+caminhos de arquivo (`config/fontes`, `terraform/modules/fonte`, nomes de
+recursos Terraform compartilhados como `aws_s3_bucket.lake`) e valores
+numéricos (`unicidade_minima: 0.99`, `dias_historico: 7`, etc.) espalhados
+no meio da prosa dos passos -- se o repositório mudasse de estrutura, ou se
+uma execução precisasse de um valor diferente do default, a única forma de
+ajustar seria editar o texto da skill em vários lugares.
+
+**O que mudou**: adicionada uma seção "Parâmetros" no topo do arquivo, com
+quatro tabelas:
+
+- **Entrada da execução**: `url` (obrigatório), `nome` (opcional, inferido
+  se omitido), overrides de qualquer campo do contrato, `pular_ingestao`.
+  Documentado que estes chegam via `args` no `Skill` tool (ex.
+  `nome=cvm unicidade_minima=0.95`), sem precisar editar o arquivo.
+- **Caminhos do padrão**: `CONTRATOS_DIR`, `MODULO_TERRAFORM`, `MAIN_TF`,
+  `DLQ_TF`, `GLUE_DIR`, `LAMBDA_DIR`, `TESTS_DIR`, `DECISOES_MD` --
+  cada um com o valor real de hoje como default, mas com a instrução
+  explícita de reler o repositório antes de confiar no valor (a tabela é
+  "último estado conhecido", não a fonte de verdade).
+- **Recursos Terraform compartilhados**: os nomes dos recursos que o
+  módulo consome por referência (`RECURSO_BUCKET`, `RECURSO_GLUE_ROLE`,
+  etc.), com a mesma ressalva -- releia `MAIN_TF` antes de montar o bloco
+  `module` de uma fonte nova.
+- **Defaults de contrato**: cada valor numérico que antes aparecia cravado
+  no meio dos passos (`unicidade_minima`, `dias_historico`,
+  `queda_maxima_tolerada`, `consistencia_sazonal`,
+  `semanas_historico_sazonal`, `janela_linhagem_dias`,
+  `margem_linhagem_horas`) virou uma linha de tabela com o default e a
+  condição em que ele se aplica -- nunca a primeira escolha quando o dado
+  real investigado permite inferir algo melhor, e sempre documentado no
+  YAML gerado quando usado.
+
+O corpo dos 9 passos do procedimento foi reescrito para referenciar estes
+parâmetros pelo nome (`CONTRATOS_DIR/<nome>.yaml`, `<RECURSO_BUCKET>.arn`)
+em vez dos valores literais, e a ordem de precedência ficou explícita:
+override passado > inferência do dado real > default da tabela. A seção
+"Quando perguntar" também passou a checar se um override já resolveu a
+pergunta antes de exigir confirmação do usuário.
+
+**Por que isso importa pra esta skill especificamente**: ela é a parte do
+repositório com maior chance de ser executada bem depois de ter sido
+escrita, possivelmente contra um repositório que já evoluiu (módulo
+renomeado, novo recurso compartilhado, convenção de teste diferente). Uma
+skill que cravasse os nomes de hoje como verdade permanente ficaria
+desatualizada silenciosamente; com os nomes como parâmetros explícitos e a
+instrução de reconferir contra o estado real do repositório, o arquivo
+continua correto mesmo que o repositório mude.
+
+**Limite inalterado**: a parametrização é só da skill em si (seus próprios
+caminhos/defaults). A execução completa de ponta a ponta contra uma segunda
+fonte real ainda não aconteceu nesta sessão -- ver seção anterior.
