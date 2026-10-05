@@ -40,7 +40,7 @@ Decisão de escopo: NÃO habilitamos
 resultados do Glue, atrelado ao Catalog) para não precisar descobrir e
 validar as permissões IAM adicionais que isso exige -- em vez disso,
 publicamos nosso próprio resumo em logs/execucoes/ (a mesma tabela de
-controle que trigger_bronze/quality_check/job_concluido já escrevem),
+controle que unzip_dtcc/quality_check/job_concluido já escrevem),
 que já é consultável no Athena e cuja permissão de escrita o role do
 Glue já tem (s3:PutObject no bucket inteiro, ver terraform/main.tf).
 `enableDataQualityCloudWatchMetrics` fica habilitado -- publica
@@ -73,8 +73,8 @@ Argumentos:
   --unicidade_minima      limiar de Uniqueness, ex. "0.99"
   --coluna_dominio        coluna categórica de domínio fechado (ColumnValues)
   --valores_dominio       lista separada por vírgula dos valores aceitos
-  --execution_id          opcional -- propagado pelo trigger_bronze.py (ver
-                          lambda/trigger_bronze.py) pra correlacionar este
+  --execution_id          opcional -- propagado pela state machine (ver
+                          lambda/unzip_dtcc.py) pra correlacionar este
                           registro com o resto do fluxo end-to-end. Ausente em
                           execuções manuais (ex.: reprocessamento direto no
                           console), e tá tudo bem nesse caso.
@@ -121,8 +121,8 @@ job.init(args["JOB_NAME"], args)
 
 def _argumento_opcional(nome: str):
     """getResolvedOptions quebra se pedir um argumento que não foi
-    passado -- execution_id só existe quando o trigger_bronze.py chamou
-    start_job_run com ele (ver lambda/trigger_bronze.py); uma execução
+    passado -- execution_id só existe quando a state machine chamou
+    startJobRun com ele (ver lambda/unzip_dtcc.py); uma execução
     manual não tem. Leitura direta do sys.argv em vez disso."""
     chave = f"--{nome}"
     if chave in sys.argv:

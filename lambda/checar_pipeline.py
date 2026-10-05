@@ -95,6 +95,16 @@ ETAPAS_ESPERADAS = os.environ.get(
 
 
 def handler(event, context):
+    """Checa atualidade, linhagem e execuções travadas; alerta no SNS se houver problema.
+
+    Args:
+        event: evento agendado do EventBridge (ignorado).
+        context: contexto Lambda (não usado).
+
+    Returns:
+        {"problemas": [...]}, lista de mensagens (vazia se tudo ok).
+        O veredito também é gravado em logs/execucoes/.
+    """
     bucket = os.environ["BUCKET"]
     registros = _ler_tabela_controle(JANELA_LINHAGEM_DIAS)
 
@@ -173,6 +183,7 @@ def _ler_tabela_controle(dias: int) -> list:
 
 
 def _dia_util_anterior(hoje):
+    """Devolve o dia útil imediatamente anterior a `hoje` (date), pulando sábado e domingo."""
     dia = hoje - timedelta(days=1)
     while dia.weekday() >= 5:  # 5 = sábado, 6 = domingo
         dia -= timedelta(days=1)
@@ -260,6 +271,17 @@ def _checar_execucoes_travadas() -> list:
 
 
 def _registrar_execucao(bucket: str, resultado: dict) -> None:
+    """Grava em logs/execucoes/ um registro JSON do tipo "checar_pipeline" (um objeto
+    por evento, em dt=AAAA-MM-DD/<uuid>.json), consultável no Athena via
+    athena/queries.sql.
+
+    Campos: timestamp (ISO 8601, UTC), origem ("checar_pipeline"), status
+    ("ok" ou "problema") e problemas.
+
+    Args:
+        bucket: bucket do pipeline, onde o registro é gravado.
+        resultado: dict com a lista `problemas` desta checagem.
+    """
     agora = datetime.now(timezone.utc)
     registro = {
         "timestamp": agora.isoformat(),

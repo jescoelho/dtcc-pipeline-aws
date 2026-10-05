@@ -46,6 +46,23 @@ sns = boto3.client("sns")
 
 
 def handler(event, context):
+    """Copia o arquivo Cumulative do dia do bucket de origem para ZIP_PREFIX.
+
+    Em caso de falha na cópia, alerta no SNS e relança a exceção.
+
+    Args:
+        event: opcional; pode sobrepor `data` (AAAA-MM-DD, default hoje em
+            UTC), `classe_ativo` e `fonte`. Evento agendado vazio usa os
+            defaults das variáveis de ambiente.
+        context: contexto Lambda (não usado).
+
+    Returns:
+        {"origem": s3:// do arquivo de origem, "destino": s3:// do .zip copiado}.
+
+    Environment:
+        ORIGEM_PADRAO, ORIGEM_BUCKET, BUCKET, ZIP_PREFIX, CLASSE_ATIVO_DEFAULT,
+        FONTE_DEFAULT, SNS_TOPIC_ARN (e NOME_FONTE, opcional).
+    """
     event = event or {}
     data = event.get("data") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     classe_ativo = event.get("classe_ativo") or os.environ["CLASSE_ATIVO_DEFAULT"]
@@ -80,6 +97,7 @@ def handler(event, context):
 
 
 def _alertar_falha(nome_arquivo: str, erro: Exception) -> None:
+    """Publica no SNS o aviso de falha da cópia de `nome_arquivo`, com o texto de `erro`."""
     nome_fonte = os.environ.get("NOME_FONTE", "dtcc")
     sns.publish(
         TopicArn=os.environ["SNS_TOPIC_ARN"],
@@ -94,6 +112,19 @@ def _alertar_falha(nome_arquivo: str, erro: Exception) -> None:
 
 
 def _registrar_execucao(bucket: str, origem_bucket: str, nome_arquivo: str, destino_key: str) -> None:
+    """Grava em logs/execucoes/ um registro JSON do tipo "ingerir_cumulative" (um objeto
+    por evento, em dt=AAAA-MM-DD/<uuid>.json), consultável no Athena via
+    athena/queries.sql.
+
+    Campos: timestamp (ISO 8601, UTC), origem ("ingerir_cumulative"), status
+    ("copiado"), zip (s3:// do destino) e origem_arquivo (s3:// da origem).
+
+    Args:
+        bucket: bucket do pipeline, onde o registro é gravado e o .zip foi copiado.
+        origem_bucket: bucket de onde o arquivo foi copiado.
+        nome_arquivo: key do arquivo no bucket de origem.
+        destino_key: key do .zip copiado dentro de `bucket`.
+    """
     agora = datetime.now(timezone.utc)
     registro = {
         "timestamp": agora.isoformat(),

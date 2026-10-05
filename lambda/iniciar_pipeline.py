@@ -56,6 +56,25 @@ _CARACTERES_INVALIDOS = re.compile(r"[^0-9A-Za-z_-]")
 
 
 def handler(event, context):
+    """Inicia a state machine para um .zip recém-chegado, evitando duplicata.
+
+    O nome da execução é derivado do nome do arquivo, então um segundo
+    evento para o mesmo .zip cai em ExecutionAlreadyExists e é descartado
+    (ver docstring do módulo).
+
+    Args:
+        event: evento EventBridge "S3 Object Created" do .zip
+            (detail.bucket.name e detail.object.key).
+        context: contexto Lambda (não usado).
+
+    Returns:
+        {"duplicado": False, "execution_arn": ...} se iniciou, ou
+        {"duplicado": True, "nome_execucao": ...} se já existia uma
+        execução com esse nome.
+
+    Environment:
+        STATE_MACHINE_ARN: ARN da state machine a iniciar.
+    """
     bucket = event["detail"]["bucket"]["name"]
     key = event["detail"]["object"]["key"]
     nome_arquivo = key.rsplit("/", 1)[-1]

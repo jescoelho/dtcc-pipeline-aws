@@ -43,8 +43,9 @@ ORDER BY total DESC;
 
 -- ============================================================
 -- Tabela de controle: um registro por execução das Lambdas
--- trigger_bronze e quality_check (ver lambda/trigger_bronze.py e
--- lambda/quality_check.py), escrito em logs/execucoes/dt=AAAA-MM-DD/,
+-- unzip_dtcc, quality_check e job_concluido (ver lambda/*.py; a
+-- trigger_bronze, aposentada em 03/10/2026, só aparece em registros
+-- antigos), escrito em logs/execucoes/dt=AAAA-MM-DD/,
 -- um JSON por evento. Diferente do log do CloudWatch (texto solto, só
 -- serve pra depurar um erro específico), isso é dado estruturado:
 -- consultável com SQL, barato de guardar por anos, base pra tendência
