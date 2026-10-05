@@ -43,6 +43,39 @@ bucket do laboratório via `s3.put_object`:
   exceção não tratada — o objetivo é que o alerta chegue ao SNS mesmo
   quando a origem está fora do ar ou mudou de formato.
 
+## Recurso — origem com listagem de diretório (`scripts/baixar_listagem.py`)
+
+Quando a investigação do passo 1 mostrar que a origem é uma listagem de
+diretório HTTP (subpasta/ano/mês com arquivos por data), use
+`scripts/baixar_listagem.py` para obter a amostra real e fazer backfill.
+Ferramenta geral e parametrizável (`--help` lista tudo): base, template
+de caminho, regex de arquivo, período, destino, headers. Idempotente;
+espelha o caminho relativo da origem na pasta de saída.
+
+Exemplo (origem com `<subpasta>/<AAAA>/<MM>/ARQ.<AAAAMMDD>.csv.zip`):
+
+    python scripts/baixar_listagem.py --base-url <URL base> --list-subdirs
+    python scripts/baixar_listagem.py --base-url <URL base> \
+        --subdirs <subpasta> --start AAAA-MM --end AAAA-MM --out <pasta> \
+        --file-regex '<regex do arquivo diário>' --dry-run   # tire --dry-run p/ baixar
+
+Regras ao usar:
+
+- Antes de rodar, verifique os termos de uso e o `robots.txt` da origem.
+  A ferramenta consulta o `robots.txt`, usa User-Agent próprio e para em
+  401/403; **não** a altere nem passe `--user-agent`/`--header`/`--ignore-robots`
+  para disfarçar o acesso a uma origem que o recusa.
+- A skill não executa downloads em massa por conta própria: sugira o
+  comando e peça ao usuário o caminho dos arquivos baixados, ou rode só
+  `--list-subdirs`/`--dry-run`/um intervalo mínimo quando o acesso for
+  claramente permitido. Infira o contrato a partir dos arquivos reais.
+- Se a origem recusar o acesso, a ingestão agendada tampouco funcionará
+  (Lambda sai de IP de nuvem): use `pular_ingestao=true` (usuário sobe os
+  arquivos ao `zip_prefix`) e registre no contrato e em `DECISOES_MD` que
+  a automação depende de autorização da origem.
+- O padrão de nome vindo da documentação ou de exemplos não está
+  verificado até haver um arquivo real; confirme no passo 1.
+
 ## Caso 3 — API paginada/autenticada, ou link do dia só descoberto numa página índice
 
 Ainda assim, uma Lambda agendada que faz a requisição necessária e grava o

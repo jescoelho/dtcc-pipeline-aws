@@ -54,6 +54,9 @@ IGNORAR_PSEUDO_RECURSOS = {"aws_caller_identity", "aws_iam_policy_document", "aw
 
 
 def coletar_arquivos(args_paths):
+    """Expande diretórios em seus *.tf e devolve só os arquivos .tf que existem, na
+    ordem informada.
+    """
     arquivos = []
     for p in args_paths:
         path = Path(p)
@@ -65,6 +68,9 @@ def coletar_arquivos(args_paths):
 
 
 def checar_balanceamento(texto, nome_arquivo):
+    """Confere o fechamento de {}, () e [] fora de strings em `texto`; devolve a lista
+    de problemas (vazia se ok).
+    """
     problemas = []
     pares = {"{": "}", "(": ")", "[": "]"}
     abre = set(pares.keys())
@@ -141,6 +147,9 @@ def coletar_declaracoes(textos_por_arquivo):
 
 
 def checar_referencias(textos_por_arquivo, declaracoes):
+    """Confere se var.*, module.*.* e aws_*.* referenciados foram declarados em
+    `declaracoes`; devolve a lista de problemas.
+    """
     problemas = []
     for nome_arquivo, texto in textos_por_arquivo.items():
         for nome in RE_VAR_REF.findall(texto):
@@ -173,6 +182,9 @@ def checar_referencias(textos_por_arquivo, declaracoes):
 
 
 def checar_contrato(textos_por_arquivo, caminho_contrato):
+    """Cruza os campos var.fonte.* usados nos .tf com as chaves do YAML em
+    `caminho_contrato`, nos dois sentidos; devolve a lista de problemas.
+    """
     if yaml is None:
         return ["pyyaml não instalado -- pulei a checagem contra o contrato YAML"]
     if not caminho_contrato.exists():
@@ -202,6 +214,9 @@ def checar_contrato(textos_por_arquivo, caminho_contrato):
 
 
 def main():
+    """Lê os argumentos, roda as checagens e imprime o relatório; sai com código 1 se
+    houver problemas e 2 se não achar .tf.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("caminhos", nargs="+", help="diretórios e/ou arquivos .tf a analisar")
     parser.add_argument("--contrato", type=Path, help="YAML do contrato de fonte, pra cruzar com var.fonte.*")

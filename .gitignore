@@ -12,3 +12,7 @@ __pycache__/
 .pytest_cache/
 terraform/.build/
 terraform/.build/
+
+# Saida local de scripts/baixar_listagem.py (pasta --out padrao: download/)
+cme_sdr/
+download/

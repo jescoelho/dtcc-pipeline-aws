@@ -35,6 +35,7 @@ passo correspondente precisar:
 | `references/mecanismo-ingestao.md` | Os três casos de mecanismo de ingestão e como decidir qual se aplica | No passo 3 |
 | `assets/modulo-instancia.tf.example` | Template do bloco `module` do Terraform | No passo 6 |
 | `scripts/validar_terraform.py` | Checagem heurística de balanceamento e referências (só executar, não precisa ler o código) | No passo 8 |
+| `scripts/baixar_listagem.py` | Ferramenta geral parametrizável: baixa arquivos de uma origem HTTP com listagem de diretório (subpasta/ano/mês), idempotente; `--help` mostra os parâmetros | Passo 1 (amostra real) e backfill, quando a origem for uma listagem de diretório; ver `references/mecanismo-ingestao.md` |
 
 ## Procedimento (visão geral — detalhe em `references/procedimento.md`)
 
