@@ -1,13 +1,11 @@
-"""Lambda disparada por evento do EventBridge: confere o volume do CSV
-que acabou de chegar em raw/dtcc/ contra o histórico recente, ANTES (em
-paralelo, não bloqueando) do Glue processar.
+"""Lambda invocada pela state machine (terraform/modules/fonte/step_functions.tf):
+confere o volume do CSV que acabou de chegar em raw/dtcc/ contra o
+histórico recente, em paralelo (não bloqueando) com o job Glue.
 
-Alvo de aws_cloudwatch_event_rule.csv_arrived (terraform/lambda.tf),
-MESMA regra que dispara lambda/trigger_bronze.py -- as duas são alvos
-independentes de um único evento do EventBridge, nenhuma espera a outra.
-Formato do evento é o "S3 Object Created" nativo do EventBridge (ver
-trigger_bronze.py para a explicação completa de por que não é o formato
-{"Records": [...]} do S3 direto):
+É o Task ChecarQualidade, num ramo do Parallel ao lado do Glue -- os
+dois ramos são independentes, nenhum espera o outro. A state machine
+monta o evento no mesmo formato do "S3 Object Created" do EventBridge
+(bucket do evento original, key do CSV devolvido pelo unzip_dtcc):
 
   {
     "detail-type": "Object Created",
@@ -18,8 +16,8 @@ trigger_bronze.py para a explicação completa de por que não é o formato
     }
   }
 
-Responsabilidade única -- só isso. Não dispara o Glue (isso é
-lambda/trigger_bronze.py) e não descompacta (lambda/unzip_dtcc.py). Se o
+Responsabilidade única -- só isso. Não dispara o Glue (isso é a
+state machine) e não descompacta (lambda/unzip_dtcc.py). Se o
 volume cair abaixo do histórico, publica no mesmo tópico SNS do alerta
 de falha do Glue (terraform/observabilidade.tf); não bloqueia a
 ingestão, só avisa.
@@ -94,6 +92,17 @@ NOME_FONTE = os.environ.get("NOME_FONTE", "dtcc")
 
 
 def handler(event, context):
+    """Confere o volume do CSV contra o histórico, sem bloquear o Glue.
+
+    Args:
+        event: evento no formato "S3 Object Created" do EventBridge
+            (detail.bucket.name e detail.object.key do CSV).
+        context: contexto Lambda (não usado).
+
+    Returns:
+        {"checado": resultado}, onde resultado é o dict de `_checar`
+        (csv, linhas, problemas).
+    """
     bucket = event["detail"]["bucket"]["name"]
     key = event["detail"]["object"]["key"]
     execution_id = _buscar_execution_id(bucket, key)
@@ -103,13 +112,17 @@ def handler(event, context):
 
 
 def _buscar_execution_id(bucket: str, key: str) -> str:
-    """Mesmo execution_id que o trigger_bronze.py lê -- ver o docstring
-    lá para a explicação completa de como ele nasce e se propaga."""
+    """Lê o execution_id do metadado do CSV, gravado pelo unzip_dtcc.py
+    (ver o docstring lá para como ele nasce e se propaga); gera um uuid
+    novo se o metadado não existir."""
     cabecalho = s3.head_object(Bucket=bucket, Key=key)
     return cabecalho.get("Metadata", {}).get("execution-id") or str(uuid.uuid4())
 
 
 def _checar(bucket: str, key: str) -> dict:
+    """Conta as linhas do CSV, compara com a baseline histórica e publica no SNS se
+    houver problema; devolve {'csv', 'linhas', 'problemas'}.
+    """
     obj = s3.get_object(Bucket=bucket, Key=key)
     texto = obj["Body"].read().decode("utf-8-sig")
     # csv.DictReader (não um split/count de linha) porque o CSV pode ter
@@ -213,6 +226,18 @@ def _media_historica(bucket: str, dias: int = DIAS_HISTORICO, mesmo_dia_semana: 
 
 
 def _registrar_execucao(bucket: str, resultado: dict, execution_id: str) -> None:
+    """Grava em logs/execucoes/ um registro JSON do tipo "quality_check" (um objeto
+    por evento, em dt=AAAA-MM-DD/<uuid>.json), consultável no Athena via
+    athena/queries.sql.
+
+    Campos: timestamp (ISO 8601, UTC), origem ("quality_check"), status
+    ("ok" ou "problema"), csv, linhas, problemas e execution_id.
+
+    Args:
+        bucket: bucket do pipeline, onde o registro é gravado.
+        resultado: dict devolvido por `_checar` (csv, linhas, problemas).
+        execution_id: uuid que liga as etapas desta execução.
+    """
     agora = datetime.now(timezone.utc)
     registro = {
         "timestamp": agora.isoformat(),
