@@ -36,6 +36,11 @@ import re
 import sys
 from pathlib import Path
 
+# Windows: stdout em cp1252 corrompe acentos; força UTF-8 (sem efeito em Linux)
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8", errors="replace")
+
 try:
     import yaml
 except ImportError:

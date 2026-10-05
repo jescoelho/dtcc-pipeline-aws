@@ -36,14 +36,23 @@ Exemplos:
 """
 import argparse
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
+from types import SimpleNamespace
 from datetime import date
 from pathlib import Path
 from urllib import robotparser
 from urllib.parse import urljoin, urlparse
 
 import requests
+
+# Windows: stdout em cp1252 corrompe acentos; força UTF-8 (sem efeito em Linux)
+for _s in (sys.stdout, sys.stderr):
+    if hasattr(_s, "reconfigure"):
+        _s.reconfigure(encoding="utf-8", errors="replace")
 
 DEFAULT_UA = "baixar-listagem/1.0 (+uso pessoal; contato: veja --user-agent)"
 HREF_RE = re.compile(r'href="([^"?#]+)"', re.I)
@@ -55,11 +64,73 @@ class Bloqueado(Exception):
     """Origem recusou o acesso (401/403): não adianta tentar de novo."""
 
 
-def get(session, url, retries, timeout, **kw):
-    """GET com retry/backoff. Retorna Response, ou None se 404."""
+class Cliente:
+    """Cliente HTTP com dois transportes: `requests` ou `curl`.
+
+    Motivo do curl: o `requests` valida o TLS com o pacote `certifi`, que não
+    completa a cadeia quando o servidor não envia o certificado intermediário
+    (caso do www.cmegroup.com -> CERTIFICATE_VERIFY_FAILED). O curl usa o
+    repositório de certificados do sistema (Schannel no Windows), que completa
+    a cadeia. A validação do certificado continua LIGADA nos dois transportes;
+    nada aqui usa -k/verify=False. Em modo "auto", começa em `requests` e muda
+    para `curl` na primeira falha de TLS.
+    """
+
+    def __init__(self, transporte, headers):
+        self.transporte = transporte
+        self.headers = dict(headers)
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
+
+    def get(self, url, timeout):
+        """GET que devolve objeto com status_code/text/content; erros de rede viram
+        requests.RequestException (inclusive no transporte curl).
+        """
+        if self.transporte == "curl":
+            return self._get_curl(url, timeout)
+        try:
+            return self.session.get(url, timeout=timeout)
+        except requests.exceptions.SSLError:
+            if self.transporte == "auto" and shutil.which("curl"):
+                print("  ! falha de TLS no requests; usando curl (repositório de "
+                      "certificados do sistema)", file=sys.stderr)
+                self.transporte = "curl"
+                return self._get_curl(url, timeout)
+            raise
+
+    def _get_curl(self, url, timeout):
+        """GET via subprocesso curl; segue redirecionamentos, valida o certificado."""
+        if not shutil.which("curl"):
+            raise requests.ConnectionError("curl não encontrado no PATH")
+        with tempfile.NamedTemporaryFile(delete=False) as tmp:
+            corpo = tmp.name
+        cmd = ["curl", "-sS", "-L", "--max-time", str(int(timeout)), "-o", corpo,
+               "-w", "%{http_code}"]
+        for k, v in self.headers.items():
+            cmd += ["-H", f"{k}: {v}"]
+        cmd.append(url)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            with open(corpo, "rb") as f:
+                content = f.read()
+        finally:
+            Path(corpo).unlink(missing_ok=True)
+        codigo = proc.stdout.strip()
+        if proc.returncode != 0 or not codigo.isdigit():
+            raise requests.ConnectionError(f"curl falhou ({proc.returncode}): {proc.stderr.strip()}")
+        status = int(codigo)
+        return SimpleNamespace(
+            status_code=status, content=content,
+            text=content.decode("utf-8", errors="replace"),
+            raise_for_status=lambda: None if status < 400 else (_ for _ in ()).throw(
+                requests.HTTPError(f"HTTP {status}")))
+
+
+def get(session, url, retries, timeout):
+    """GET com retry/backoff via `Cliente`. Retorna Response, ou None se 404."""
     for attempt in range(1, retries + 1):
         try:
-            r = session.get(url, timeout=timeout, **kw)
+            r = session.get(url, timeout)
             if r.status_code == 404:
                 return None
             if r.status_code in BLOCKED_STATUS:
@@ -139,8 +210,8 @@ def build_parser():
     ap.add_argument("--user-agent", default=DEFAULT_UA)
     ap.add_argument("--header", action="append", default=[], metavar="CHAVE=VALOR",
                     help="header extra (repetível), ex.: Authorization=Bearer ...")
-    ap.add_argument("--ignore-robots", action="store_true",
-                    help="não consulta robots.txt (padrão: consulta e respeita)")
+    ap.add_argument("--transport", choices=["auto", "requests", "curl"], default="auto",
+                    help="cliente HTTP; auto = requests, com fallback p/ curl em erro de TLS")
     return ap
 
 
@@ -151,14 +222,14 @@ def pode_acessar(rp, ua, url):
     return rp is None or rp.can_fetch(ua, url)
 
 
-def carregar_robots(base_url, ua, timeout):
+def carregar_robots(base_url, cliente, timeout):
     """Baixa e interpreta o robots.txt da origem de `base_url`; devolve None se não
     existir ou falhar.
     """
     p = urlparse(base_url)
     url = f"{p.scheme}://{p.netloc}/robots.txt"
     try:
-        r = requests.get(url, timeout=timeout, headers={"User-Agent": ua})
+        r = cliente.get(url, timeout)
     except requests.RequestException:
         return None
     if r.status_code != 200:
@@ -176,13 +247,13 @@ def main(argv=None):
     if not args.base_url.endswith("/"):
         args.base_url += "/"
 
-    s = requests.Session()
-    s.headers.update({"User-Agent": args.user_agent, "Accept": "*/*"})
+    headers = {"User-Agent": args.user_agent, "Accept": "*/*"}
     for h in args.header:
         k, _, v = h.partition("=")
-        s.headers[k.strip()] = v.strip()
+        headers[k.strip()] = v.strip()
+    s = Cliente(args.transport, headers)
 
-    rp = None if args.ignore_robots else carregar_robots(args.base_url, args.user_agent, args.timeout)
+    rp = carregar_robots(args.base_url, s, args.timeout)
 
     try:
         if args.list_subdirs:

@@ -20,6 +20,10 @@ sem precisar editar nenhum arquivo da skill.
 
 ## Caminhos do padrão
 
+Exceto `OUT_DIR`, os caminhos abaixo são o **modelo de referência** no
+repositório principal: a skill os **lê e copia** para dentro de `OUT_DIR`
+(mesmo layout relativo) e adapta a cópia. Não edita os originais.
+
 Valores de referência — **releia o repositório antes de confiar neles**, no
 início da execução; se algum caminho tiver sido renomeado ou movido desde a
 escrita desta skill, use o caminho real e ignore o valor abaixo. Esta tabela
@@ -27,6 +31,7 @@ escrita desta skill, use o caminho real e ignore o valor abaixo. Esta tabela
 
 | Parâmetro | Default (estado do repositório em 04/10/2026) |
 |---|---|
+| `OUT_DIR` | `.claude/outputs/<nome>` — **destino de tudo que a skill gera** (pasta autocontida; o repositório principal nunca é alterado) |
 | `CONTRATOS_DIR` | `config/fontes` |
 | `MODULO_TERRAFORM` | `terraform/modules/fonte` |
 | `MAIN_TF` | `terraform/main.tf` |

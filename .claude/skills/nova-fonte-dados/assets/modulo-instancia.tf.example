@@ -1,4 +1,6 @@
-# Template pro passo 6 do procedimento (ver SKILL.md e
+# Template pro passo 6 do procedimento. O resultado vai para
+# OUT_DIR/terraform/main.tf (pasta autocontida), não para o main.tf do
+# repositório principal; a raiz de OUT_DIR contém só a instância desta fonte (ver SKILL.md e
 # references/parametros.md). Copie este bloco pra MAIN_TF, substitua
 # <nome> e os nomes entre <> pelos parâmetros reais -- releia MAIN_TF
 # primeiro e confirme que RECURSO_BUCKET/RECURSO_GLUE_ROLE/etc ainda
@@ -29,9 +31,9 @@ module "<nome>" {
   glue_script_source_path    = "${path.module}/../<script_bronze_desta_fonte>"
 }
 
-# DLQ_TF precisa de uma edição manual separada: adicione os 4 ARNs desta
+# Em OUT_DIR/terraform/dlq.tf (cópia adaptada de DLQ_TF), liste os 4 ARNs desta
 # fonte (module.<nome>.zip_arrived_rule_arn,
 # module.<nome>.glue_bronze_concluido_rule_arn,
 # module.<nome>.checar_pipeline_agenda_rule_arn,
 # module.<nome>.ingestao_agendada_rule_arn) à política existente da fila --
-# não crie uma fila DLQ nova por fonte.
+# na fila DLQ da própria pasta de saída.

@@ -63,7 +63,7 @@ Regras ao usar:
 
 - Antes de rodar, verifique os termos de uso e o `robots.txt` da origem.
   A ferramenta consulta o `robots.txt`, usa User-Agent próprio e para em
-  401/403; **não** a altere nem passe `--user-agent`/`--header`/`--ignore-robots`
+  401/403; **não** a altere nem passe `--user-agent`/`--header`
   para disfarçar o acesso a uma origem que o recusa.
 - A skill não executa downloads em massa por conta própria: sugira o
   comando e peça ao usuário o caminho dos arquivos baixados, ou rode só
@@ -77,6 +77,11 @@ Regras ao usar:
   verificado até haver um arquivo real; confirme no passo 1.
 
 ## Caso 3 — API paginada/autenticada, ou link do dia só descoberto numa página índice
+
+Exemplo concluído: `.claude/outputs/ice_ticker/lambda/ingerir_ice_ticker.py`
+(SPA com token anônimo → `getConfig` → export CSV por data; só `urllib`).
+Quando a origem entrega o arquivo já descompactado (CSV direto), grave-o
+em `zip_prefix`: o `unzip_dtcc.py` da pasta de saída aceita `.csv`.
 
 Ainda assim, uma Lambda agendada que faz a requisição necessária e grava o
 resultado no bucket — mas documente explicitamente a complexidade adicional

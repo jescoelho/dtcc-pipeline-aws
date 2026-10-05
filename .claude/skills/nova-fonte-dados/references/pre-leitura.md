@@ -1,31 +1,38 @@
-# Pré-leitura obrigatória
+# Pré-leitura — em camadas (orçamento de contexto)
 
-Antes de gerar qualquer arquivo, leia `references/parametros.md` e, na
-ordem:
+Tudo abaixo é lido do **repositório principal como modelo de referência**
+(somente leitura); o que for gerado vai para `OUT_DIR`
+(`.claude/outputs/<nome>/`). O repositório tem milhares de linhas
+(`docs/DECISOES.md` sozinho passa de mil): **não leia tudo de uma vez**.
+Carregue só o que o passo corrente exige e prefira `Grep`/`Read` com
+`offset`/`limit` a abrir arquivos inteiros.
 
-1. `README.md` e `DECISOES_MD` — o histórico de decisões e os limites já
-   assumidos (ex.: "não há binário `terraform` neste tipo de ambiente").
-2. Um contrato existente em `CONTRATOS_DIR` (ex. `dtcc.yaml`) — o contrato de
-   referência, com cada campo comentado explicando seu propósito.
-3. `MODULO_TERRAFORM/*.tf` — o módulo reutilizável; entender `variables.tf`
-   (o que o módulo espera receber) e `locals.tf` (a convenção de
-   nomenclatura que todo recurso por fonte segue).
-4. `MAIN_TF` — como uma instância do módulo é declarada hoje e com quais
-   nomes os recursos compartilhados são passados por referência. **Esta
-   leitura é a que confirma ou corrige os defaults da tabela "Recursos
-   Terraform compartilhados"** (em `references/parametros.md`) — trate a
-   tabela como a última leitura conhecida, não como garantida.
-5. `GLUE_SCRIPT_PADRAO` — o job Glue genérico (lê CSV com header, aplica
-   ruleset DQDL montado a partir do contrato).
-6. Uma Lambda de ingestão agendada existente em `LAMBDA_DIR` (ex.
-   `ingerir_cumulative.py`). Seu nome e implementação (`CopyObject` S3→S3)
-   são específicos de uma origem que já é um bucket S3 com padrão de nome
-   previsível — não generaliza automaticamente para uma URL arbitrária (ver
-   passo 3 do procedimento e `references/mecanismo-ingestao.md`).
-7. As demais Lambdas genéricas em `LAMBDA_DIR` (checagem de qualidade,
-   checagem de pipeline, descompactação, conclusão de job, início de
-   pipeline) — dirigidas só por variáveis de ambiente vindas do contrato.
-   Estas provavelmente servem para a fonte nova sem alteração.
-8. `TESTS_DIR/test_lambda_*.py` — convenção de teste (mocks de boto3 via
-   `unittest.mock`, nomes de teste descritivos, docstring em português
-   explicando o cenário).
+Antes de tudo: `references/catalogo.md` (o que já existe para reutilizar) e
+`references/parametros.md`. Se já houver pipelines em `.claude/outputs/`,
+use o mais parecido como exemplo concluído (ex. `ice_ticker/`, API HTTP com
+token) em vez de reler o modelo DTCC.
+
+## Camada 1 — antes do passo 1 (essencial, ~400 linhas)
+
+1. Um contrato em `CONTRATOS_DIR` (ex. `dtcc.yaml`) — cada campo comentado.
+2. `MODULO_TERRAFORM/variables.tf` e `locals.tf` — o que o módulo espera
+   receber e a convenção de nomes.
+3. `MAIN_TF` — só o bloco que instancia o módulo e os recursos
+   compartilhados. **Confirma ou corrige a tabela "Recursos Terraform
+   compartilhados" de `parametros.md`** (trate-a como última leitura
+   conhecida, não como garantida).
+
+## Camada 2 — sob demanda, no passo que precisar
+
+| Passo | Leia |
+|---|---|
+| 3 | A Lambda de ingestão de referência (ex. `ingerir_cumulative.py`) e seu teste — específica de origem S3; ver `mecanismo-ingestao.md` antes de copiar |
+| 4 | `GLUE_SCRIPT_PADRAO` (função de montagem do ruleset DQDL) |
+| 6 | O restante de `MODULO_TERRAFORM/*.tf` (só os arquivos que for adaptar) e `DLQ_TF` |
+| 7 | Um `TESTS_DIR/test_lambda_*.py` como convenção (mocks de boto3 via `unittest.mock`, docstring em português) |
+| 9 | `README.md` (estrutura) e as **últimas** entradas de `DECISOES_MD` (estilo); use `Grep '^## '` para achar a seção certa, não leia o arquivo inteiro |
+
+As Lambdas genéricas (qualidade, checagem de pipeline, descompactação,
+conclusão de job, início) são dirigidas só por variáveis de ambiente do
+contrato e provavelmente servem sem alteração: copie-as sem lê-las; só abra
+uma se o teste falhar ou o formato da fonte colidir com ela.

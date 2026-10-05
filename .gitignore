@@ -16,3 +16,6 @@ terraform/.build/
 # Saida local de scripts/baixar_listagem.py (pasta --out padrao: download/)
 cme_sdr/
 download/
+
+# Pipelines gerados pela skill nova-fonte-dados (saida local, nao versionada)
+.claude/outputs/
