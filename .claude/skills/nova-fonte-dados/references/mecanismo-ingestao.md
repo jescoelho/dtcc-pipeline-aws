@@ -78,7 +78,8 @@ Regras ao usar:
 
 ## Caso 3 — API paginada/autenticada, ou link do dia só descoberto numa página índice
 
-Exemplo concluído: `.claude/outputs/ice_ticker/lambda/ingerir_ice_ticker.py`
+Exemplo concluído (padrão em `references/catalogo.md`; a pasta de saída é
+local e pode não existir no clone): `lambda/ingerir_ice_ticker.py`
 (SPA com token anônimo → `getConfig` → export CSV por data; só `urllib`).
 Quando a origem entrega o arquivo já descompactado (CSV direto), grave-o
 em `zip_prefix`: o `unzip_dtcc.py` da pasta de saída aceita `.csv`.

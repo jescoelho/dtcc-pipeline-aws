@@ -8,9 +8,10 @@ Carregue só o que o passo corrente exige e prefira `Grep`/`Read` com
 `offset`/`limit` a abrir arquivos inteiros.
 
 Antes de tudo: `references/catalogo.md` (o que já existe para reutilizar) e
-`references/parametros.md`. Se já houver pipelines em `.claude/outputs/`,
-use o mais parecido como exemplo concluído (ex. `ice_ticker/`, API HTTP com
-token) em vez de reler o modelo DTCC.
+`references/parametros.md`. Se houver pipelines locais em `.claude/outputs/`
+(ignorada pelo git; pode estar vazia), use o mais parecido como exemplo
+(ex. `ice_ticker/`, API HTTP com token); senão o catálogo descreve o padrão e
+o modelo DTCC é a referência.
 
 ## Camada 1 — antes do passo 1 (essencial, ~400 linhas)
 

@@ -32,8 +32,12 @@ Athena, `README.md`, `docs/DECISOES.md`) que espelha o layout do
 repositório. A skill **não altera** o repositório principal (nem o
 módulo `terraform/modules/fonte`, nem as Lambdas, nem `docs/`): ela os lê
 como **referência do modelo** e copia/adapta para dentro da pasta de
-saída. Exemplo completo e já validado: `.claude/outputs/ice_ticker/`. Se
-`.claude/outputs/<nome>/` já existir, pergunte antes de sobrescrever.
+saída. **`.claude/outputs/` é local e ignorado pelo git**: a skill não pode
+depender de um pipeline anterior existir no clone (o que vale reutilizar está
+em `references/catalogo.md`, `scripts/` e `.claude/agents/`). No resumo final,
+avise o usuário de que a pasta não é versionada e como guardá-la se quiser
+(`git add -f` ou copiar para `docs/`). Se `.claude/outputs/<nome>/` já
+existir, pergunte antes de sobrescrever.
 
 ## Papel deste arquivo
 
