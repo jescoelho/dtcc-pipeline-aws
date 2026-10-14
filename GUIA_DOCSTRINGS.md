@@ -1,46 +1,49 @@
-# Guia de docstrings (Python)
+# Guia de docstrings e comentários (Python)
 
 Objetivo: quem abre o repo entende o fluxo lendo só as docstrings (módulo → classe → função), e entra no corpo do código apenas onde importa.
 
 ## Regras gerais
 
-- Comentário explica o **porquê** (decisão, armadilha), não o **o quê**.
+- **Docstring descreve o contrato** (o que faz, o que recebe, o que devolve). **Comentário inline explica o porquê** (decisão, armadilha), nunca o que o código já diz.
 - Nomes claros valem mais que comentário.
 - Docstring desatualizada é pior que nenhuma: mudou o código, atualize a docstring.
-- Type hints documentam entrada e saída; não repita em prosa o que eles já dizem.
-- Formato adotado: Google style (`Args`, `Returns`, `Raises`).
+- Type hints documentam tipos; não repita em prosa o que eles já dizem. Na docstring, descreva restrições e significado (ex: "maior ou igual a zero").
+- **Formato:** Google style. Os nomes das seções ficam em inglês (`Args`, `Returns`, `Raises`, `Yields`, `Attributes`, `Example`, `Note`) e o texto em português.
+- **Primeira linha:** resumo em 1 linha, na 3ª pessoa do presente ("Calcula...", "Remove..."), terminando com ponto. Se houver mais conteúdo, deixe uma linha em branco depois dela.
+
+## Quando dispensar a docstring
+
+Dispense quando o nome e os type hints já respondem **o que faz, o que recebe e o que devolve**. Esse é o único critério; vale onde esta tabela diz "dispensável".
+
+- **Sempre documente:** módulo e classe/função/método **público**, com pelo menos o resumo de 1 linha. `Args`, `Returns` e `Raises` entram só quando acrescentam algo além do nome e dos type hints.
+- **Dispensável:** método ou função privada curta (`_nome`), property/getter/setter óbvio, `__init__` simples, `__repr__` trivial e teste cujo nome já descreve o comportamento.
+- **`dataclass` ou `Enum` com campos autoexplicativos:** 1 linha na classe basta.
 
 ## O que documentar e o que deve conter
 
 | # | Onde | O que deve conter |
 |---|------|-------------------|
-| 1 | **Módulo** (topo do arquivo) | O que o arquivo contém, quem deveria usá-lo, dependências importantes. Em scripts: como rodar e quais argumentos recebe. |
+| 1 | **Módulo** (topo do arquivo) | O que o arquivo contém e quando usá-lo; dependências importantes. Em scripts: como rodar e quais argumentos recebe. |
 | 2 | **Pacote** (`__init__.py`) | O que o pacote oferece e o que é exportado. |
-| 3 | **Classe** | Responsabilidade em 1 linha, atributos não óbvios, exemplo curto de uso. Se o `__init__` for simples, os parâmetros entram aqui. |
-| 4 | **Função / método público** | O que faz, `Args`, `Returns`, `Raises`. Se houver regra de negócio, efeito colateral ou premissa relevante, registre em `Note`. |
-| 5 | **Método privado** (`_nome`) | Só se a lógica não for óbvia: 1 linha do que faz e por quê. |
-| 6 | **Método especial não trivial** (`__call__`, `__enter__`/`__exit__`, `__getitem__`, `__eq__`) | Qual comportamento customizado e o que retorna. |
-| 7 | **Property** | 1 linha do que o valor representa (no getter). |
-| 8 | **Constante / variável de módulo** | Comentário com significado, unidade e fonte, quando houver. |
+| 3 | **Classe** | Responsabilidade em 1 linha; `Attributes` quando não forem autoexplicativos; parâmetros do `__init__` (que não têm docstring própria); `Example` curto, opcional. |
+| 4 | **Função / método público** | O que faz; `Args`; `Returns` (omita quando devolve `None`); `Raises` (só exceções que a função levanta ou deixa propagar de propósito); `Yields` em geradores; `Note` conforme a seção abaixo. |
+| 5 | **Função / método privado** (`_nome`) e **função aninhada** | Dispensável (ver critério). Se a lógica não for óbvia: 1 linha do que faz e por quê. |
+| 6 | **Método especial** (`__call__`, `__enter__`/`__exit__`, `__getitem__`, `__eq__`) | Dispensável nos triviais. Nos customizados: qual comportamento e o que retorna. |
+| 7 | **Property** | Dispensável se óbvia. Caso contrário, 1 linha do que o valor representa (no getter). |
+| 8 | **Constante / variável de módulo** | Comentário `#` com significado, unidade e fonte, quando houver. É comentário, não docstring. |
 | 9 | **Decorator / função que retorna função** | O que adiciona ao comportamento e se altera a assinatura. |
-| 10 | **Exceção customizada** | Quando é levantada. |
-| 11 | **Teste** | 1 linha do comportamento verificado. |
+| 10 | **Exceção customizada** | Quando é levantada. Esta linha prevalece sobre a da classe (3). |
+| 11 | **Teste** | Dispensável se o nome descreve o comportamento. Caso contrário, 1 linha do comportamento verificado. |
 
-## Não precisam de docstring
+Para funções assíncronas, use as mesmas regras das síncronas.
 
-- Funções internas triviais.
-- Getters/setters óbvios.
-- `__init__` simples (documente os parâmetros na classe).
-- `__repr__` e similares triviais.
+## Quando usar `Note`
 
-## Onde dar mais atenção
+Use `Note` para o que quem chama precisa saber e o código não deixa óbvio:
 
-Erros silenciosos moram onde o código decide ou transforma algo. Priorize a docstring de:
-
-- **Módulos**, porque são o mapa do projeto.
-- **Funções com regra de negócio ou cálculo**: diga o que entra, o que sai e qual premissa assume.
-- **Funções com efeito colateral** (escrevem em disco, banco, API, alteram estado global ou o argumento recebido): diga o que é alterado.
-- **Fronteiras do sistema** (I/O, chamadas externas, parsing de entrada): diga o formato esperado e o que acontece quando falha.
+- **Regra de negócio ou premissa:** ex: "Descontos não são cumulativos com cupom; vale o maior."
+- **Efeito colateral:** escreve em disco, banco ou API, altera estado global ou o argumento recebido.
+- **Fronteira do sistema** (I/O, chamada externa, parsing): formato esperado e o que acontece quando falha, se não estiver em `Raises`.
 
 ## Templates
 
@@ -71,6 +74,8 @@ class CarrinhoDeCompras:
         7.5
     """
 ```
+
+O `Example` é ilustrativo. Só vira teste se o projeto executar doctests.
 
 ### Função com regra de negócio
 
@@ -124,6 +129,6 @@ class ConfiguracaoInvalidaError(Exception):
 TIMEOUT_REQUISICAO = 30  # segundos; limite acordado com o time de infraestrutura
 ```
 
-## Para colar no prompt padrão
+## Trecho para colar no prompt ou no `AGENTS.md` / `CLAUDE.md`
 
-> Toda função, classe e módulo com docstring no formato Google style. Funções com regra de negócio, cálculo ou efeito colateral devem registrar a premissa ou o efeito em `Note`. Não adicione comentários que repetem o código.
+> Documente com docstring Google style (seções em inglês, texto em português) todo módulo e toda classe, função e método público, com pelo menos um resumo de 1 linha na 3ª pessoa. Use `Args`/`Returns`/`Raises` só quando acrescentarem algo além do nome e dos type hints. Registre em `Note` regra de negócio, premissa ou efeito colateral. Dispense docstring em privados curtos, getters óbvios, `__init__` simples e testes com nome descritivo. Não escreva comentários que repetem o código.
